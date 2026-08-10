@@ -2,7 +2,7 @@ services:
   api:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: fast_Backend/Dockerfile
     env_file:
       - .env
     ports:

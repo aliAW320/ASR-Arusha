@@ -2,7 +2,7 @@
 """Enroll and identify speakers using pyannote speaker embeddings.
 
 Install:
-    pip install "pyannote.audio>=4,<5" "faster-whisper>=1.2,<2" numpy torch
+    uv add "pyannote.audio>=4,<5" "faster-whisper>=1.2,<2" numpy torch
 
 Examples:
     # Enrollment audio must contain only Amir's voice.

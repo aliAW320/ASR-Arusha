@@ -1,0 +1,16 @@
+[project]
+name = "persian-meeting-backend"
+version = "0.1.0"
+description = "Persian meeting audio processing backend"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.141.1",
+    "pwdlib[argon2]>=0.3.0",
+    "pydantic-settings",
+    "pyjwt>=2.13.0",
+    "python-multipart",
+    "uvicorn[standard]",
+]
+
+[tool.uv]
+package = false

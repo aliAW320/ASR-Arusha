@@ -33,3 +33,22 @@ class TokenResponse(BaseModel):
 
 class AuthResponse(TokenResponse):
     user: UserResponse
+
+
+class CreateMeetingRequest(BaseModel):
+    title: str
+    description: str | None = None
+    scheduled_time: datetime | None = None
+    date : datetime | None = None
+
+
+class MeetingResponse(BaseModel):
+    id: uuid.UUID
+    title: str
+    description: str | None
+    scheduled_time: datetime | None = None
+    date : datetime | None = None
+    owner_id: uuid.UUID
+
+
+

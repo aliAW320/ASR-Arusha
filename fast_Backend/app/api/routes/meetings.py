@@ -3,6 +3,9 @@ from fastapi import APIRouter
 
 router = APIRouter(prefix="/meetings", tags=["meetings"])
 
+@router.post("/add")
+async def add_meeting():
+    pass
 
 @router.post("/process")
 async def process_meeting():

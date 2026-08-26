@@ -1,0 +1,260 @@
+name: CI/CD
+
+on:
+  pull_request:
+    branches:
+      - main
+
+  push:
+    branches:
+      - main
+    tags:
+      - "v*.*.*"
+
+  workflow_dispatch:
+
+concurrency:
+  group: ci-cd-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  UV_VERSION: "0.12.3"
+
+jobs:
+  python-tests:
+    name: Python tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Verify lock file and install dependencies
+        run: uv sync --locked
+
+      - name: Run pre-build tests
+        run: |
+          uv run --locked pytest \
+            --ignore=test/test_compose_integration.py \
+            -q \
+            --tb=short
+
+  docker-integration-and-publish:
+    name: Docker - ${{ matrix.name }}
+    needs:
+      - python-tests
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: api
+            dockerfile: Docker/api.Dockerfile
+            local_image: asr-arusha-api:ci
+            registry_image: asr-arusha-api
+            run_compose_integration: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Verify lock file and install test dependencies
+        run: uv sync --locked
+
+      - name: Generate Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.registry_image }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+            type=sha,prefix=sha-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build Docker image for testing
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          load: true
+          push: false
+          tags: ${{ matrix.local_image }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Create CI environment file
+        if: matrix.run_compose_integration
+        shell: bash
+        run: |
+          cat > .env <<'EOF'
+          APP_ENV=test
+          SERVICE_NAME=meeting-api
+          LOG_LEVEL=INFO
+          LOG_FORMAT=auto
+          API_PORT=8000
+
+          POSTGRES_DB=meeting_audio_ci
+          POSTGRES_USER=meeting_ci
+          POSTGRES_PASSWORD=ci-postgres-password
+          POSTGRES_PORT=5252
+          DATABASE_URL=postgresql+asyncpg://meeting_ci:ci-postgres-password@localhost:5252/meeting_audio_ci
+
+          JWT_SECRET_KEY=ci-test-secret-key-that-is-at-least-32-characters
+          JWT_ALGORITHM=HS256
+          ACCESS_TOKEN_EXPIRE_MINUTES=30
+          ADMIN_EMAIL=
+          ADMIN_PASSWORD=
+          ADMIN_FULL_NAME=
+
+          MINIO_ROOT_USER=meeting_minio_ci
+          MINIO_ROOT_PASSWORD=ci-minio-password
+          MINIO_API_PORT=9000
+          MINIO_CONSOLE_PORT=9001
+          MINIO_ENDPOINT=minio:9000
+          MINIO_SECURE=false
+          MINIO_MEETINGS_BUCKET=meeting-audios
+          MINIO_SPEAKERS_BUCKET=speaker-samples
+          MINIO_EXPORTS_BUCKET=transcript-exports
+          VOICE_UPLOAD_MAX_BYTES=524288000
+
+          OBJECT_STORAGE_BACKEND=minio
+          EOF
+
+      - name: Start integration stack
+        if: matrix.run_compose_integration
+        env:
+          API_CI_IMAGE: ${{ matrix.local_image }}
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.ci.yml \
+            up -d --no-build
+
+      - name: Wait for API
+        if: matrix.run_compose_integration
+        env:
+          API_CI_IMAGE: ${{ matrix.local_image }}
+        shell: bash
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error \
+              http://127.0.0.1:8000/openapi.json \
+              > /dev/null; then
+              echo "API is ready."
+              exit 0
+            fi
+
+            echo "Waiting for API... (${attempt}/60)"
+            sleep 2
+          done
+
+          echo "API did not become ready."
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.ci.yml \
+            ps || true
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.ci.yml \
+            logs --no-color api postgres minio || true
+          exit 1
+
+      - name: Run Compose integration test
+        if: matrix.run_compose_integration
+        env:
+          INTEGRATION_BASE_URL: http://127.0.0.1:8000
+        run: |
+          uv run --locked pytest \
+            test/test_compose_integration.py \
+            -q \
+            --tb=short
+
+      - name: Show Compose logs on failure
+        if: failure() && matrix.run_compose_integration
+        env:
+          API_CI_IMAGE: ${{ matrix.local_image }}
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.ci.yml \
+            ps || true
+
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.ci.yml \
+            logs --no-color api postgres minio || true
+
+      - name: Stop integration stack
+        if: always() && matrix.run_compose_integration
+        env:
+          API_CI_IMAGE: ${{ matrix.local_image }}
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.ci.yml \
+            down -v --remove-orphans || true
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push the tested image to GHCR
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        shell: bash
+        env:
+          LOCAL_IMAGE: ${{ matrix.local_image }}
+          REMOTE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+
+          while IFS= read -r tag; do
+            if [ -z "$tag" ]; then
+              continue
+            fi
+
+            echo "Publishing ${tag}"
+            docker tag "${LOCAL_IMAGE}" "${tag}"
+            docker push "${tag}"
+          done <<< "${REMOTE_TAGS}"

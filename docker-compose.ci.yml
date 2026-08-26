@@ -1,0 +1,13 @@
+services:
+  api:
+    # The workflow builds this image once, then Compose starts exactly that
+    # local image for the end-to-end test. It must not rebuild or pull it.
+    image: ${API_CI_IMAGE:-asr-arusha-api:ci}
+    pull_policy: never
+    restart: "no"
+
+  postgres:
+    restart: "no"
+
+  minio:
+    restart: "no"

@@ -10,6 +10,7 @@ from sqlalchemy.orm import joinedload
 from ...database import get_db_session
 from ...dependencies import get_current_user
 from ...models import Meeting, MeetingMember, MeetingMemberRole, User
+from ...observability.context import bind_log_context
 from ...schemas import (
     AddMeetingMemberRequest,
     CreateMeetingRequest,
@@ -71,6 +72,7 @@ async def create_meeting(
     )
     await session.commit()
     await session.refresh(meeting)
+    bind_log_context(meeting_id=str(meeting.id))
     return _meeting_response(meeting)
 
 

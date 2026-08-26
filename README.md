@@ -14,6 +14,8 @@ Backend پایه سامانه Meeting Intelligence با FastAPI، PostgreSQL و 
 - نگهداری bucket/key/checksum و metadata آپلود در PostgreSQL
 - سه بار تلاش برای ثبت metadata و حذف object از MinIO پس از شکست نهایی
 - audit log غیرقابل حذف برای تغییرات business و رخدادهای احراز هویت/امنیتی
+- structured logging روی stdout/stderr با JSON در production/test و خروجی خوانا در development
+- حفظ `request_id` و `correlation_id` در پاسخ HTTP، Log و History
 - migration با Alembic؛ شامل پذیرش schema قدیمی ساخته‌شده توسط `create_all`
 
 ## اجرا با Docker Compose
@@ -91,6 +93,34 @@ GET    /history                        # admin only, immutable
 
 Swagger UI پس از اجرا در `/docs` در دسترس است.
 
+## Logging و Correlation
+
+هر request یک `X-Request-ID` و `X-Correlation-ID` معتبر دریافت می‌کند. اگر client شناسه‌ای با حداکثر ۱۰۰ کاراکتر از مجموعه `A-Z a-z 0-9 . _ : -` بفرستد، همان شناسه حفظ می‌شود؛ در غیر این صورت UUID جدید ساخته می‌شود. اگر correlation ارسال نشود، مقدار request ID را می‌گیرد. هر دو شناسه در header پاسخ نیز برگردانده می‌شوند.
+
+در production و test هر خط stdout یک JSON مستقل با قرارداد پایه زیر است:
+
+```text
+timestamp, level, service, environment, event, message
+request_id, correlation_id, client_ip
+user_id, meeting_id, voice_id       # در صورت وجود context
+method, route, status_code, duration_ms
+```
+
+`route` الگوی route است و query string در access log ثبت نمی‌شود. body، query، Cookie، Authorization، password، token، secret، transcript و headerهای خام ثبت نمی‌شوند؛ email نیز mask می‌شود. Exception مدیریت‌نشده یک‌بار همراه stack trace و context ثبت می‌شود و پاسخ عمومی ۵۰۰ شامل request ID است. رخداد `/health` در سطح `DEBUG` ثبت می‌شود تا در production پرحجم نباشد.
+
+تنظیمات قابل تغییر:
+
+```text
+APP_ENV=development        # development | test | production
+SERVICE_NAME=meeting-api
+LOG_LEVEL=INFO
+LOG_FORMAT=auto            # auto | json | console
+```
+
+در حالت `auto`، development خروجی console و test/production خروجی JSON دارند. برنامه فایل log و rotation مدیریت نمی‌کند؛ زیرساخت container می‌تواند stdout/stderr را بعداً به Loki/OpenSearch یا سامانه مشابه ارسال کند. `trace_id` تا زمان اضافه‌شدن tracing واقعی تولید نمی‌شود.
+
+History یک audit trail تجاری جدا از log عملیاتی است، ولی `request_id` و `correlation_id` مشترک دارد. ادمین می‌تواند `GET /history` را علاوه بر event/actor با queryهای `request_id` و `correlation_id` فیلتر کند.
+
 ## Migration
 
 برای اجرای دستی migration:
@@ -110,6 +140,7 @@ test_auth.py
 test_meetings.py
 test_voices.py
 test_history.py
+test_logging.py
 test_migrations.py
 test_architecture.py
 test_compose_integration.py

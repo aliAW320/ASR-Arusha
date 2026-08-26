@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import Meeting, MeetingMember, MeetingMemberRole, User, UserRole
+from ..observability.context import bind_log_context
 
 
 class MeetingPermission(str, enum.Enum):
@@ -43,6 +44,7 @@ async def require_meeting_permission(
     if meeting is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Meeting not found")
 
+    bind_log_context(meeting_id=str(meeting.id))
     if is_admin(user):
         return meeting
 

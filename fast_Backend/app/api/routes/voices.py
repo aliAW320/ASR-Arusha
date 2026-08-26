@@ -13,6 +13,9 @@ from ...config import get_settings
 from ...database import get_db_session
 from ...dependencies import get_current_user
 from ...models import Meeting, User, VoiceFile
+from ...observability.context import bind_log_context
+from ...observability.events import LogEvent
+from ...observability.logging import get_logger
 from ...schemas import VoiceResponse
 from ...services.audit import add_history_event
 from ...services.permissions import (
@@ -26,6 +29,7 @@ from ...storage.minio import get_object_storage
 
 router = APIRouter(tags=["voices"])
 DB_WRITE_ATTEMPTS = 3
+logger = get_logger(__name__)
 
 
 async def _inspect_upload(upload: UploadFile, max_bytes: int) -> tuple[int, str]:
@@ -57,6 +61,13 @@ async def _remove_uploaded_object(
     try:
         await storage.remove_object(bucket, object_key)
     except Exception as error:
+        logger.exception(
+            LogEvent.UPLOAD_CLEANUP_FAILED,
+            "Uploaded object cleanup failed",
+            error=error,
+            bucket=bucket,
+            object_key=object_key,
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Upload metadata failed and the uploaded object could not be cleaned up",
@@ -93,12 +104,21 @@ async def upload_voice(
         raise HTTPException(status_code=422, detail="Voice file cannot be empty")
 
     voice_id = uuid.uuid4()
+    bind_log_context(voice_id=str(voice_id))
     bucket = settings.minio_meetings_bucket
     filename = _safe_filename(upload.filename)
     object_key = f"meetings/{meeting_id}/voices/{voice_id}/source/{filename}"
     try:
         await storage.put_object(bucket, object_key, upload.file, size_bytes, content_type)
     except Exception as error:
+        logger.exception(
+            LogEvent.OBJECT_STORAGE_UPLOAD_FAILED,
+            "Voice upload to object storage failed",
+            error=error,
+            bucket=bucket,
+            object_key=object_key,
+            size_bytes=size_bytes,
+        )
         raise HTTPException(status_code=503, detail="Object storage upload failed") from error
 
     actor_id = current_user.id
@@ -155,6 +175,23 @@ async def upload_voice(
             existing = await session.get(VoiceFile, voice_id)
             if existing is not None:
                 return existing
+            fields = {
+                "attempt": attempt_number + 1,
+                "max_attempts": DB_WRITE_ATTEMPTS,
+                "error_type": type(error).__name__,
+            }
+            if attempt_number + 1 < DB_WRITE_ATTEMPTS:
+                logger.warning(
+                    LogEvent.DATABASE_WRITE_RETRY,
+                    "Voice metadata write failed; retrying",
+                    **fields,
+                )
+            else:
+                logger.error(
+                    LogEvent.DATABASE_WRITE_FAILED,
+                    "Voice metadata write attempts exhausted",
+                    **fields,
+                )
 
     await _remove_uploaded_object(storage, bucket, object_key)
     raise HTTPException(
@@ -198,6 +235,7 @@ async def get_voice(
     voice = await session.get(VoiceFile, voice_id)
     if voice is None:
         raise HTTPException(status_code=404, detail="Voice file not found")
+    bind_log_context(voice_id=str(voice.id))
     if voice.meeting_id is None:
         if not is_admin(current_user):
             raise HTTPException(status_code=403, detail="Insufficient permission")
@@ -219,6 +257,7 @@ async def delete_voice(
     voice = await session.get(VoiceFile, voice_id)
     if voice is None:
         raise HTTPException(status_code=404, detail="Voice file not found")
+    bind_log_context(voice_id=str(voice.id))
     meeting: Meeting | None = None
     if voice.meeting_id is not None:
         meeting = await require_meeting_permission(
@@ -230,6 +269,13 @@ async def delete_voice(
     try:
         await storage.remove_object(voice.minio_bucket, voice.minio_key)
     except Exception as error:
+        logger.exception(
+            LogEvent.OBJECT_STORAGE_DELETE_FAILED,
+            "Voice deletion from object storage failed",
+            error=error,
+            bucket=voice.minio_bucket,
+            object_key=voice.minio_key,
+        )
         raise HTTPException(status_code=503, detail="Object storage deletion failed") from error
 
     add_history_event(

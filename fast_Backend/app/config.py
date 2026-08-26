@@ -6,6 +6,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    app_env: Literal["development", "test", "production"] = "development"
+    service_name: str = "meeting-api"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    log_format: Literal["auto", "json", "console"] = "auto"
+
     database_url: str
     jwt_secret_key: SecretStr = Field(min_length=32)
     jwt_algorithm: Literal["HS256"] = "HS256"
@@ -20,6 +25,14 @@ class Settings(BaseSettings):
     minio_secure: bool = False
     minio_meetings_bucket: str = "meetings"
     voice_upload_max_bytes: int = 500 * 1024 * 1024
+
+    @property
+    def json_logs_enabled(self) -> bool:
+        if self.log_format == "json":
+            return True
+        if self.log_format == "console":
+            return False
+        return self.app_env != "development"
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -9,12 +9,16 @@ from ...auth.providers import AuthenticationProvider, get_authentication_provide
 from ...database import get_db_session
 from ...dependencies import get_current_user
 from ...models import User
+from ...observability.context import bind_log_context
+from ...observability.events import LogEvent
+from ...observability.logging import get_logger
 from ...schemas import AuthResponse, LoginRequest, RegisterRequest, UserResponse
 from ...security import create_access_token
 from ...services.audit import add_history_event
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = get_logger(__name__)
 
 
 def _auth_response(user: User) -> AuthResponse:
@@ -51,6 +55,7 @@ async def register_user(
         raise HTTPException(status_code=409, detail="A user with this email already exists") from None
 
     await session.refresh(user)
+    bind_log_context(user_id=str(user.id))
     return _auth_response(user)
 
 
@@ -65,6 +70,12 @@ async def login_user(
     user = await provider.authenticate(session, email, payload.password)
     if user is None:
         affected_user = await session.scalar(select(User).where(User.email == email))
+        logger.warning(
+            LogEvent.AUTHENTICATION_FAILED,
+            "Authentication failed",
+            reason="invalid_credentials",
+            user_exists=affected_user is not None,
+        )
         add_history_event(
             session,
             event_type="auth.login_failed",
@@ -81,6 +92,12 @@ async def login_user(
         )
 
     if not user.is_active:
+        logger.warning(
+            LogEvent.AUTHENTICATION_FAILED,
+            "Authentication blocked for inactive account",
+            reason="inactive_account",
+            user_id=str(user.id),
+        )
         add_history_event(
             session,
             event_type="auth.login_blocked",
@@ -100,6 +117,7 @@ async def login_user(
         affected_users=[user],
     )
     await session.commit()
+    bind_log_context(user_id=str(user.id))
     return _auth_response(user)
 
 

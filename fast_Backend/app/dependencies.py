@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .database import get_db_session
 from .models import User
+from .observability.context import bind_log_context
 from .security import decode_access_token
 
 
@@ -35,4 +36,5 @@ async def get_current_user(
     if user is None or not user.is_active:
         raise unauthorized
 
+    bind_log_context(user_id=str(user.id))
     return user

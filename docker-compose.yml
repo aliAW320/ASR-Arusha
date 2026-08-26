@@ -1,4 +1,15 @@
 services:
+  ui:
+    build:
+      context: .
+      dockerfile: Docker/ui.Dockerfile
+    ports:
+      - "127.0.0.1:${UI_PORT:-3000}:80"
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+
   api:
     build:
       context: .

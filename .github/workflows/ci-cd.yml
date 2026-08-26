@@ -73,6 +73,11 @@ jobs:
             local_image: asr-arusha-api:ci
             registry_image: asr-arusha-api
             run_compose_integration: true
+          - name: ui
+            dockerfile: Docker/ui.Dockerfile
+            local_image: asr-arusha-ui:ci
+            registry_image: asr-arusha-ui
+            run_compose_integration: false
 
     steps:
       - name: Checkout repository
@@ -163,7 +168,7 @@ jobs:
           docker compose \
             -f docker-compose.yml \
             -f docker-compose.ci.yml \
-            up -d --no-build
+            up -d --no-build postgres minio api
 
       - name: Wait for API
         if: matrix.run_compose_integration

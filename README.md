@@ -1,6 +1,6 @@
-# Persian Meeting Backend
+# Persian Meeting Platform
 
-Backend پایه سامانه Meeting Intelligence با FastAPI، PostgreSQL و MinIO. در این فاز تنها قابلیت‌های سبک API پیاده‌سازی شده‌اند و هیچ runtime یا کتابخانه ML در image بک‌اند نصب نمی‌شود.
+Backend پایه سامانه Meeting Intelligence با FastAPI، PostgreSQL و MinIO به‌همراه UI سبک و مستقل. در این فاز تنها قابلیت‌های سبک API پیاده‌سازی شده‌اند و هیچ runtime یا کتابخانه ML در image بک‌اند نصب نمی‌شود.
 
 ## قابلیت‌های این فاز
 
@@ -34,6 +34,39 @@ docker compose up --build
 
 `docker-compose.yml` طبق قرارداد پروژه در ریشه است و Dockerfile بک‌اند در `Docker/api.Dockerfile` قرار دارد. container API پیش از شروع FastAPI، `alembic upgrade head` را اجرا می‌کند.
 PostgreSQL فقط روی loopback میزبان و پورت `5252` منتشر می‌شود؛ ارتباط داخلی containerها همچنان از پورت `5432` استفاده می‌کند.
+
+پس از آماده‌شدن سرویس‌ها:
+
+- UI در `http://127.0.0.1:3000`
+- API در `http://127.0.0.1:8000`
+- Swagger در `http://127.0.0.1:8000/docs`
+
+## UI مستقل
+
+UI یک رابط فارسی و RTL چندصفحه‌ای است که به‌عنوان سرویس مستقل Nginx اجرا می‌شود. Dockerfile آن در `Docker/ui.Dockerfile`، تنظیم Nginx در `Docker/ui.nginx.conf` و source آن در پوشه `ui/` قرار دارد. مسیر `/api` در Nginx به سرویس backend پروکسی می‌شود؛ بنابراین مرورگر فقط با origin خود UI ارتباط دارد و نیازی به فعال‌کردن CORS در backend نیست.
+
+صفحات و منطق هر حوزه جدا نگهداری می‌شوند:
+
+```text
+ui/login.html             + ui/js/auth-page.js
+ui/register.html          + ui/js/auth-page.js
+ui/meetings.html          + ui/js/meetings-page.js
+ui/meeting.html           + ui/js/meeting-page.js
+ui/history.html           + ui/js/history-page.js
+ui/js/api.js              # ارتباط مشترک با backend و session
+ui/js/layout.js           # layout، sidebar و ابزارهای نمایشی مشترک
+```
+
+قابلیت‌های فعلی UI:
+
+- ثبت‌نام و ورود و نگهداری نشست
+- فهرست، ساخت، ویرایش و حذف Meeting
+- مشاهده، افزودن، تغییر نقش و حذف اعضا
+- آپلود، مشاهده و حذف فایل صوتی
+- نمایش و فیلتر History برای ادمین
+- ارسال `X-Request-ID` برای اتصال درخواست‌های UI به Logging و History
+
+پورت UI از `UI_PORT` قابل تغییر است. UI وابستگی runtime یا build به Node ندارد و فایل‌های استاتیک مستقیماً توسط Nginx ارائه می‌شوند.
 
 ## ساخت یا به‌روزرسانی ادمین اولیه
 
@@ -141,6 +174,7 @@ test_meetings.py
 test_voices.py
 test_history.py
 test_logging.py
+test_ui.py
 test_migrations.py
 test_architecture.py
 test_compose_integration.py
@@ -153,6 +187,17 @@ PYTHONPATH=fast_Backend uv run pytest -q test/
 ```
 
 در فازهای بعد، تست جدید به فایل حوزه مربوط اضافه می‌شود و همان مجموعه حوزه برای جلوگیری از regression اجرا خواهد شد.
+
+## CI/CD
+
+workflow موجود در `.github/workflows/ci-cd.yml` اکنون دو image مستقل `api` و `ui` را در matrix می‌سازد. تست‌های Python پیش از build اجرا می‌شوند؛ تست Compose روی PostgreSQL و MinIO واقعی فقط برای API اجرا می‌شود؛ سپس در push به `main` یا tag نسخه، همان imageهای ساخته‌شده به GHCR منتشر می‌شوند:
+
+```text
+ghcr.io/<owner>/asr-arusha-api
+ghcr.io/<owner>/asr-arusha-ui
+```
+
+برای pull request فقط build و test انجام می‌شود و image منتشر نمی‌شود. Compose integration عمداً سرویس‌های `postgres minio api` را صریح بالا می‌آورد تا image مستقل UI در job جداگانه باعث تداخل در تست backend نشود.
 
 ## مرز ML
 

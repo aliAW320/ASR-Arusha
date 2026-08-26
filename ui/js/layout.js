@@ -1,0 +1,34 @@
+import { api, clearSession, getStoredUser, getToken } from "./api.js";
+
+export const $ = (selector, root = document) => root.querySelector(selector);
+export const faNumber = (value) => Number(value || 0).toLocaleString("fa-IR");
+export const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]);
+export const formatDate = (value, withTime = false) => new Intl.DateTimeFormat("fa-IR", { dateStyle: "medium", timeStyle: withTime ? "short" : undefined }).format(new Date(value));
+
+export function toast(message, type = "success") {
+  const element = $("#toast");
+  if (!element) return;
+  element.textContent = message;
+  element.className = `toast show ${type === "error" ? "error" : ""}`;
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => { element.className = "toast"; }, 3200);
+}
+
+export async function requireUser({ admin = false } = {}) {
+  if (!getToken()) { location.replace("/login.html"); return null; }
+  try {
+    const user = await api("/auth/me");
+    localStorage.setItem("meeting_user", JSON.stringify(user));
+    if (admin && user.role !== "admin") { location.replace("/meetings.html"); return null; }
+    return user;
+  } catch (_) { return null; }
+}
+
+export function renderSidebar(user = getStoredUser(), active = "meetings") {
+  const sidebar = $("[data-sidebar]");
+  if (!sidebar || !user) return;
+  const name = user.full_name || user.email.split("@")[0];
+  sidebar.innerHTML = `<div class="brand"><div class="brand-mark small">هـ</div><div><strong>هم‌نشین</strong><small>فضای جلسات شما</small></div></div><nav><a class="nav-item ${active === "meetings" ? "active" : ""}" href="/meetings.html"><span>◫</span> جلسه‌ها</a>${user.role === "admin" ? `<a class="nav-item ${active === "history" ? "active" : ""}" href="/history.html"><span>⌁</span> تاریخچه سامانه</a>` : ""}</nav><div class="sidebar-foot"><div class="user-chip"><span>${escapeHtml(name.slice(0, 1))}</span><div><strong>${escapeHtml(name)}</strong><small>${escapeHtml(user.email)}</small></div></div><button id="logout-button" class="icon-button" title="خروج">↪</button></div>`;
+  $("#logout-button").addEventListener("click", () => { clearSession(); location.replace("/login.html"); });
+  $("[data-mobile-menu]")?.addEventListener("click", () => sidebar.classList.toggle("open"));
+}

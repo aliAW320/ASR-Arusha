@@ -5,6 +5,7 @@ from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import History, Meeting, User, VoiceFile
+from ..observability.context import get_log_context
 
 
 def add_history_event(
@@ -19,13 +20,19 @@ def add_history_event(
     affected_meetings: Iterable[Meeting] = (),
     affected_voices: Iterable[VoiceFile] = (),
 ) -> History:
-    request_id = request.headers.get("x-request-id") if request else None
-    ip_address = request.client.host if request and request.client else None
+    context = get_log_context()
+    request_id = context.get("request_id")
+    correlation_id = context.get("correlation_id")
+    ip_address = context.get("client_ip")
+    if request is not None:
+        request_id = request_id or request.headers.get("x-request-id")
+        ip_address = ip_address or (request.client.host if request.client else None)
     event = History(
         event_type=event_type,
         action_description=description,
         actor=actor,
         request_id=request_id,
+        correlation_id=correlation_id,
         ip_address=ip_address,
         event_data=event_data,
         affected_users=list(affected_users),

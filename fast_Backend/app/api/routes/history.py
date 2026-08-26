@@ -25,6 +25,7 @@ def _history_response(event: History) -> HistoryResponse:
         actor_user_id=event.actor_user_id,
         event_data=event.event_data,
         request_id=event.request_id,
+        correlation_id=event.correlation_id,
         ip_address=event.ip_address,
         created_at=event.created_at,
         affected_user_ids=[item.id for item in event.affected_users],
@@ -46,6 +47,8 @@ async def get_history(
     session: Annotated[AsyncSession, Depends(get_db_session)],
     event_type: str | None = None,
     actor_user_id: uuid.UUID | None = None,
+    request_id: str | None = None,
+    correlation_id: str | None = None,
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=200)] = 100,
 ):
@@ -61,6 +64,8 @@ async def get_history(
         event_data={
             "event_type_filter": event_type,
             "actor_user_id_filter": str(actor_user_id) if actor_user_id else None,
+            "request_id_filter": request_id,
+            "correlation_id_filter": correlation_id,
             "offset": offset,
             "limit": limit,
         },
@@ -80,6 +85,10 @@ async def get_history(
         query = query.where(History.event_type == event_type)
     if actor_user_id:
         query = query.where(History.actor_user_id == actor_user_id)
+    if request_id:
+        query = query.where(History.request_id == request_id)
+    if correlation_id:
+        query = query.where(History.correlation_id == correlation_id)
     events = (
         await session.scalars(
             query.order_by(History.created_at.desc()).offset(offset).limit(limit)

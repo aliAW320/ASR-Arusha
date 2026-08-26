@@ -125,6 +125,7 @@ class HistoryResponse(BaseModel):
     actor_user_id: uuid.UUID | None
     event_data: dict | None
     request_id: str | None
+    correlation_id: str | None
     ip_address: str | None
     created_at: datetime
     affected_user_ids: list[uuid.UUID] = Field(default_factory=list)

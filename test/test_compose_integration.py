@@ -15,8 +15,14 @@ def test_auth_meeting_and_real_minio_upload_round_trip():
         registered = client.post(
             "/auth/register",
             json={"email": email, "password": "integration-password"},
+            headers={
+                "X-Request-ID": "compose-registration",
+                "X-Correlation-ID": "compose-flow",
+            },
         )
         assert registered.status_code == 201, registered.text
+        assert registered.headers["x-request-id"] == "compose-registration"
+        assert registered.headers["x-correlation-id"] == "compose-flow"
         headers = {
             "Authorization": f"Bearer {registered.json()['access_token']}"
         }

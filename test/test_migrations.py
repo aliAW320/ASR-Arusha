@@ -23,7 +23,9 @@ def test_initial_migration_builds_the_backend_schema(tmp_path):
     )
     assert result.returncode == 0, result.stderr
 
-    tables = set(inspect(create_engine(f"sqlite:///{database_path}")).get_table_names())
+    migrated_engine = create_engine(f"sqlite:///{database_path}")
+    inspector = inspect(migrated_engine)
+    tables = set(inspector.get_table_names())
     assert {
         "alembic_version",
         "users",
@@ -33,6 +35,8 @@ def test_initial_migration_builds_the_backend_schema(tmp_path):
         "voices",
         "history",
     } <= tables
+    history_columns = {column["name"] for column in inspector.get_columns("history")}
+    assert "correlation_id" in history_columns
 
 
 def test_migration_adopts_legacy_create_all_schema(tmp_path):
@@ -105,8 +109,10 @@ def test_migration_adopts_legacy_create_all_schema(tmp_path):
     assert result.returncode == 0, result.stderr
 
     columns = {column["name"] for column in inspect(engine).get_columns("users")}
+    history_columns = {column["name"] for column in inspect(engine).get_columns("history")}
     assert "role" in columns
     assert "hashed_password" not in columns
+    assert "correlation_id" in history_columns
     with engine.connect() as connection:
         identity = connection.execute(
             text("SELECT provider, subject, secret_hash FROM auth_identities")

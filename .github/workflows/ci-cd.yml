@@ -37,7 +37,6 @@ jobs:
         with:
           python-version-file: .python-version
 
-
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
@@ -141,9 +140,6 @@ jobs:
           JWT_SECRET_KEY=ci-test-secret-key-that-is-at-least-32-characters
           JWT_ALGORITHM=HS256
           ACCESS_TOKEN_EXPIRE_MINUTES=30
-          ADMIN_EMAIL=
-          ADMIN_PASSWORD=
-          ADMIN_FULL_NAME=
 
           MINIO_ROOT_USER=meeting_minio_ci
           MINIO_ROOT_PASSWORD=ci-minio-password
@@ -175,8 +171,69 @@ jobs:
           API_CI_IMAGE: ${{ matrix.local_image }}
         shell: bash
         run: |
+          set -euo pipefail
+
           for attempt in $(seq 1 60); do
-            if curl --fail --silent --show-error \
+            API_CONTAINER_ID="$(docker compose \
+              -f docker-compose.yml \
+              -f docker-compose.ci.yml \
+              ps -q api)"
+
+            if [ -z "${API_CONTAINER_ID}" ]; then
+              echo "API container was not created."
+
+              docker compose \
+                -f docker-compose.yml \
+                -f docker-compose.ci.yml \
+                ps -a || true
+
+              docker compose \
+                -f docker-compose.yml \
+                -f docker-compose.ci.yml \
+                logs --no-color api postgres minio || true
+
+              exit 1
+            fi
+
+            API_STATE="$(docker inspect \
+              --format='{{.State.Status}}' \
+              "${API_CONTAINER_ID}")"
+
+            if [ "${API_STATE}" = "exited" ] || [ "${API_STATE}" = "dead" ]; then
+              echo "API container exited before becoming ready."
+
+              echo
+              echo "========== COMPOSE STATUS =========="
+              docker compose \
+                -f docker-compose.yml \
+                -f docker-compose.ci.yml \
+                ps -a || true
+
+              echo
+              echo "========== API LOGS =========="
+              docker compose \
+                -f docker-compose.yml \
+                -f docker-compose.ci.yml \
+                logs --no-color api || true
+
+              echo
+              echo "========== POSTGRES LOGS =========="
+              docker compose \
+                -f docker-compose.yml \
+                -f docker-compose.ci.yml \
+                logs --no-color postgres || true
+
+              echo
+              echo "========== MINIO LOGS =========="
+              docker compose \
+                -f docker-compose.yml \
+                -f docker-compose.ci.yml \
+                logs --no-color minio || true
+
+              exit 1
+            fi
+
+            if curl --fail --silent \
               http://127.0.0.1:8000/openapi.json \
               > /dev/null; then
               echo "API is ready."
@@ -187,15 +244,18 @@ jobs:
             sleep 2
           done
 
-          echo "API did not become ready."
+          echo "API did not become ready within 120 seconds."
+
           docker compose \
             -f docker-compose.yml \
             -f docker-compose.ci.yml \
-            ps || true
+            ps -a || true
+
           docker compose \
             -f docker-compose.yml \
             -f docker-compose.ci.yml \
             logs --no-color api postgres minio || true
+
           exit 1
 
       - name: Run Compose integration test
@@ -216,7 +276,7 @@ jobs:
           docker compose \
             -f docker-compose.yml \
             -f docker-compose.ci.yml \
-            ps || true
+            ps -a || true
 
           docker compose \
             -f docker-compose.yml \

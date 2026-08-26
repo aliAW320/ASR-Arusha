@@ -1,0 +1,128 @@
+# Persian Meeting Backend
+
+Backend پایه سامانه Meeting Intelligence با FastAPI، PostgreSQL و MinIO. در این فاز تنها قابلیت‌های سبک API پیاده‌سازی شده‌اند و هیچ runtime یا کتابخانه ML در image بک‌اند نصب نمی‌شود.
+
+## قابلیت‌های این فاز
+
+- ثبت‌نام و ورود با پاسخ یکسان شامل access token و اطلاعات کاربر
+- جداسازی حساب داخلی `User` از هویت ورود `AuthIdentity` برای اتصال آینده به احراز هویت مرکزی
+- نقش سراسری `USER` و `ADMIN`
+- bootstrap کنترل‌شده و idempotent ادمین اولیه
+- CRUD جلسه و مدیریت اعضای ثبت‌شده
+- نقش‌های جلسه `OWNER`، `CONTRIBUTOR` و `VIEWER` با policy متمرکز و قابل توسعه
+- آپلود multipart صوت تا سقف پیش‌فرض ۵۰۰ مگابایت در MinIO
+- نگهداری bucket/key/checksum و metadata آپلود در PostgreSQL
+- سه بار تلاش برای ثبت metadata و حذف object از MinIO پس از شکست نهایی
+- audit log غیرقابل حذف برای تغییرات business و رخدادهای احراز هویت/امنیتی
+- migration با Alembic؛ شامل پذیرش schema قدیمی ساخته‌شده توسط `create_all`
+
+## اجرا با Docker Compose
+
+تنظیمات را آماده کنید:
+
+```bash
+cp .env.example .env
+```
+
+حداقل `JWT_SECRET_KEY`، اطلاعات PostgreSQL و MinIO را تغییر دهید. سپس:
+
+```bash
+docker compose up --build
+```
+
+`docker-compose.yml` طبق قرارداد پروژه در ریشه است و Dockerfile بک‌اند در `Docker/api.Dockerfile` قرار دارد. container API پیش از شروع FastAPI، `alembic upgrade head` را اجرا می‌کند.
+PostgreSQL فقط روی loopback میزبان و پورت `5252` منتشر می‌شود؛ ارتباط داخلی containerها همچنان از پورت `5432` استفاده می‌کند.
+
+## ساخت یا به‌روزرسانی ادمین اولیه
+
+در `.env` مقدارهای زیر را تنظیم کنید:
+
+```text
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=a-strong-password
+ADMIN_FULL_NAME=Administrator
+```
+
+سپس فرمان idempotent زیر را اجرا کنید:
+
+```bash
+docker compose exec api uv run python -m app.cli.create_admin
+```
+
+ثبت‌نام عمومی همیشه کاربر با نقش `USER` می‌سازد. نقش سراسری کاربر از نقش او در یک Meeting مستقل است.
+
+## ماتریس دسترسی Meeting
+
+| نقش | مشاهده | ویرایش Meeting | مدیریت Voice | مدیریت اعضا | حذف Meeting |
+|---|---:|---:|---:|---:|---:|
+| OWNER | بله | بله | بله | بله | بله |
+| CONTRIBUTOR | بله | بله | بله | خیر | خیر |
+| VIEWER | بله | خیر | خیر | خیر | خیر |
+| ADMIN | همه Meetingها | بله | بله | بله | بله |
+
+ماتریس در `app/services/permissions.py` متمرکز است تا تغییر نقش‌ها در آینده به routeها نشت نکند.
+
+## APIهای اصلی
+
+```text
+POST   /auth/register
+POST   /auth/login
+GET    /auth/me
+
+POST   /meetings
+GET    /meetings
+GET    /meetings/{meeting_id}
+PATCH  /meetings/{meeting_id}
+DELETE /meetings/{meeting_id}
+
+GET    /meetings/{meeting_id}/members
+POST   /meetings/{meeting_id}/members
+PATCH  /meetings/{meeting_id}/members/{user_id}
+DELETE /meetings/{meeting_id}/members/{user_id}
+
+POST   /meetings/{meeting_id}/voices
+GET    /meetings/{meeting_id}/voices
+GET    /voices/{voice_id}
+DELETE /voices/{voice_id}
+GET    /voices                         # admin only
+
+GET    /history                        # admin only, immutable
+```
+
+Swagger UI پس از اجرا در `/docs` در دسترس است.
+
+## Migration
+
+برای اجرای دستی migration:
+
+```bash
+uv run alembic upgrade head
+```
+
+اولین migration هم دیتابیس تازه را می‌سازد و هم دیتابیس قدیمی ایجادشده با `Base.metadata.create_all` را شناسایی و بدون حذف کاربران، رمزها، Meetingها یا History موجود ارتقا می‌دهد. اجرای مستقیم `create_all` از startup حذف شده است.
+
+## تست‌ها
+
+تست‌ها بر اساس حوزه در پوشه `test/` نگهداری می‌شوند:
+
+```text
+test_auth.py
+test_meetings.py
+test_voices.py
+test_history.py
+test_migrations.py
+test_architecture.py
+test_compose_integration.py
+```
+
+اجرای کامل این فاز:
+
+```bash
+PYTHONPATH=fast_Backend uv run pytest -q test/
+```
+
+در فازهای بعد، تست جدید به فایل حوزه مربوط اضافه می‌شود و همان مجموعه حوزه برای جلوگیری از regression اجرا خواهد شد.
+
+## مرز ML
+
+هیچ dependency، runtime یا تنظیمات اجرایی مدل در پروژه بک‌اند وجود ندارد. در فاز worker، سرویس ML باید manifest، image و محیط مستقل خودش را داشته باشد؛ ارتباط آن با backend فقط از مرز API/پیام تعریف‌شده انجام خواهد شد.

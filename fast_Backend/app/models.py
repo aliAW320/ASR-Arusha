@@ -13,6 +13,7 @@ from sqlalchemy import (
     Enum as SqlEnum,
     ForeignKey,
     Integer,
+    JSON,
     String,
     Table,
     Text,
@@ -46,8 +47,14 @@ class VoiceStatus(str, enum.Enum):
 
 
 class MeetingMemberRole(str, enum.Enum):
+    OWNER = "owner"
     CONTRIBUTOR = "contributor"
     VIEWER = "viewer"
+
+
+class UserRole(str, enum.Enum):
+    ADMIN = "admin"
+    USER = "user"
 
 
 class ResultArtifactType(str, enum.Enum):
@@ -316,7 +323,13 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     full_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
-    hashed_password: Mapped[str] = mapped_column(String(255))
+    role: Mapped[UserRole] = mapped_column(
+        _enum_type(UserRole, "user_role"),
+        default=UserRole.USER,
+        server_default=UserRole.USER.value,
+        nullable=False,
+        index=True,
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -341,6 +354,46 @@ class User(Base):
         secondary=history_affected_users,
         back_populates="affected_users",
     )
+    auth_identities: Mapped[list[AuthIdentity]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class AuthIdentity(Base):
+    """Authentication identity kept separate from the domain user account.
+
+    The local provider stores a password hash. A future central provider can
+    map its stable subject to the same User without changing domain relations.
+    """
+
+    __tablename__ = "auth_identities"
+    __table_args__ = (
+        UniqueConstraint("provider", "subject", name="uq_auth_identity_subject"),
+        UniqueConstraint("user_id", "provider", name="uq_auth_identity_user_provider"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    provider: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    subject: Mapped[str] = mapped_column(String(320), nullable=False)
+    secret_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    user: Mapped[User] = relationship(back_populates="auth_identities")
 
 
 class Meeting(Base):
@@ -1319,10 +1372,14 @@ class History(Base):
     __tablename__ = "history"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     action_description: Mapped[str] = mapped_column(Text, nullable=False)
-    actor_user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="RESTRICT"),
-        nullable=False,
+    event_data: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     created_at: Mapped[datetime] = mapped_column(
@@ -1331,7 +1388,7 @@ class History(Base):
         index=True,
     )
 
-    actor: Mapped[User] = relationship(back_populates="history_events")
+    actor: Mapped[User | None] = relationship(back_populates="history_events")
 
     affected_users: Mapped[list[User]] = relationship(
         secondary=history_affected_users,

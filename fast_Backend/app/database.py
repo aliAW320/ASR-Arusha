@@ -19,12 +19,5 @@ async def get_db_session() -> AsyncIterator[AsyncSession]:
         yield session
 
 
-async def create_database_tables() -> None:
-    from . import models  # noqa: F401
-
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-
-
 async def close_database() -> None:
     await engine.dispose()

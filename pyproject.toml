@@ -8,31 +8,22 @@ dependencies = [
     "asyncpg>=0.31.0",
     "email-validator>=2.3.0",
     "fastapi>=0.141.1",
-    "faster-whisper>=1.2,<2",
     "minio>=7.2.20",
-    "numpy>=2.4.6",
     "pwdlib[argon2]>=0.3.0",
-    "pyannote-audio>=4,<5",
     "pydantic-settings",
     "pyjwt>=2.13.0",
     "python-multipart",
-    "qdrant-client>=1.19.0",
     "sqlalchemy[asyncio]>=2.0.51",
-    "torch",
-    "torchaudio",
-    "torchcodec",
     "uvicorn[standard]",
+]
+
+[dependency-groups]
+dev = [
+    "aiosqlite>=0.21,<0.22",
+    "httpx>=0.28",
+    "pytest>=8.4",
+    "pytest-asyncio>=1.1",
 ]
 
 [tool.uv]
 package = false
-
-[tool.uv.sources]
-torch = { index = "pytorch-cpu" }
-torchaudio = { index = "pytorch-cpu" }
-torchcodec = { index = "pytorch-cpu" }
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true

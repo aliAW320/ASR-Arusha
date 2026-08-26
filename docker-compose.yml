@@ -2,7 +2,7 @@ services:
   api:
     build:
       context: .
-      dockerfile: fast_Backend/Dockerfile
+      dockerfile: Docker/api.Dockerfile
     env_file:
       - .env
     environment:
@@ -12,8 +12,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      qdrant:
-        condition: service_started
       minio:
         condition: service_started
     restart: unless-stopped
@@ -25,7 +23,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
-      - "127.0.0.1:${POSTGRES_PORT}:5432"
+      - "127.0.0.1:5252:5432"
     volumes:
       - postgres_data:/var/lib/postgresql
     healthcheck:
@@ -33,15 +31,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-    restart: unless-stopped
-
-  qdrant:
-    image: qdrant/qdrant:v1.18.2
-    ports:
-      - "127.0.0.1:${QDRANT_HTTP_PORT}:6333"
-      - "127.0.0.1:${QDRANT_GRPC_PORT}:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
     restart: unless-stopped
 
   minio:
@@ -59,5 +48,4 @@ services:
 
 volumes:
   postgres_data:
-  qdrant_data:
   minio_data:

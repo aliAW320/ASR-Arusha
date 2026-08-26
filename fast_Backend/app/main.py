@@ -3,12 +3,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from .api.router import api_router
-from .database import close_database, create_database_tables
+from .database import close_database
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    await create_database_tables()
     yield
     await close_database()
 

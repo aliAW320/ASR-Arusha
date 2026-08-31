@@ -7,3 +7,5 @@ speaker_detector.py
 *.ipynb
 graphify-out/
 meeting_platform_architecture.md
+test/audio_test
+.agents/

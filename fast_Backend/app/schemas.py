@@ -11,10 +11,17 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     full_name: str | None = Field(default=None, min_length=1, max_length=150)
 
+    # Reject ignored fields such as a client-supplied role.  Keeping request
+    # models strict prevents future fields from accidentally becoming a mass
+    # assignment path.
+    model_config = ConfigDict(extra="forbid")
+
 
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=1, max_length=128)
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class UserResponse(BaseModel):
@@ -137,3 +144,62 @@ class HistoryResponse(BaseModel):
     affected_meeting_speaker_ids: list[uuid.UUID] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ProcessingAttemptResponse(BaseModel):
+    id: uuid.UUID
+    attempt_number: int
+    status: str
+    worker_name: str | None
+    external_request_id: str | None
+    error_code: str | None
+    error_message: str | None
+    queued_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProcessingJobResponse(BaseModel):
+    id: uuid.UUID
+    result_id: uuid.UUID
+    voice_id: uuid.UUID
+    meeting_id: uuid.UUID | None
+    stage: str
+    status: str
+    model_name: str | None
+    created_at: datetime
+    attempts: list[ProcessingAttemptResponse]
+
+
+class ResultArtifactResponse(BaseModel):
+    id: uuid.UUID
+    artifact_type: str
+    minio_bucket: str
+    minio_key: str
+    content_type: str | None
+    checksum_sha256: str | None
+    producer_job_id: uuid.UUID | None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ResultResponse(BaseModel):
+    id: uuid.UUID
+    voice_id: uuid.UUID
+    generated_at: datetime
+    completed_at: datetime | None
+    artifacts: list[ResultArtifactResponse]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TranscriptResponse(BaseModel):
+    result_id: uuid.UUID
+    schema_version: str
+    language: str
+    text: str
+    segments: list[dict]
+    metrics: dict

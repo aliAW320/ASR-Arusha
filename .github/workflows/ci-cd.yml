@@ -50,6 +50,7 @@ jobs:
         run: |
           uv run --locked pytest \
             --ignore=test/test_compose_integration.py \
+            -m "not asr_benchmark" \
             -q \
             --tb=short
 
@@ -77,6 +78,11 @@ jobs:
             dockerfile: Docker/ui.Dockerfile
             local_image: asr-arusha-ui:ci
             registry_image: asr-arusha-ui
+            run_compose_integration: false
+          - name: asr
+            dockerfile: Docker/asr.Dockerfile
+            local_image: asr-arusha-worker:ci
+            registry_image: asr-arusha-worker
             run_compose_integration: false
 
     steps:

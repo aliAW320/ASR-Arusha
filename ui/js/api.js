@@ -1,17 +1,19 @@
 const API_ROOT = "/api";
 
-export function getToken() { return localStorage.getItem("meeting_token"); }
+const storage = sessionStorage;
+
+export function getToken() { return storage.getItem("meeting_token"); }
 export function getStoredUser() {
-  try { return JSON.parse(localStorage.getItem("meeting_user") || "null"); }
-  catch (_) { localStorage.removeItem("meeting_user"); return null; }
+  try { return JSON.parse(storage.getItem("meeting_user") || "null"); }
+  catch (_) { storage.removeItem("meeting_user"); return null; }
 }
 export function saveSession(payload) {
-  localStorage.setItem("meeting_token", payload.access_token);
-  localStorage.setItem("meeting_user", JSON.stringify(payload.user));
+  storage.setItem("meeting_token", payload.access_token);
+  storage.setItem("meeting_user", JSON.stringify(payload.user));
 }
 export function clearSession() {
-  localStorage.removeItem("meeting_token");
-  localStorage.removeItem("meeting_user");
+  storage.removeItem("meeting_token");
+  storage.removeItem("meeting_user");
 }
 function requestId() {
   return globalThis.crypto?.randomUUID?.() || `ui-${Date.now()}-${Math.random().toString(16).slice(2)}`;

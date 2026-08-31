@@ -1,4 +1,5 @@
 from functools import lru_cache
+import shutil
 from typing import BinaryIO
 
 from anyio import to_thread
@@ -44,6 +45,24 @@ class MinioObjectStorage:
 
     async def remove_object(self, bucket: str, object_key: str) -> None:
         await to_thread.run_sync(self.client.remove_object, bucket, object_key)
+
+    async def download_object(
+        self,
+        bucket: str,
+        object_key: str,
+        destination: BinaryIO,
+    ) -> None:
+        def download() -> None:
+            response = self.client.get_object(bucket, object_key)
+            try:
+                destination.seek(0)
+                shutil.copyfileobj(response, destination)
+                destination.seek(0)
+            finally:
+                response.close()
+                response.release_conn()
+
+        await to_thread.run_sync(download)
 
 
 @lru_cache

@@ -18,7 +18,7 @@ export async function requireUser({ admin = false } = {}) {
   if (!getToken()) { location.replace("/login.html"); return null; }
   try {
     const user = await api("/auth/me");
-    localStorage.setItem("meeting_user", JSON.stringify(user));
+    sessionStorage.setItem("meeting_user", JSON.stringify(user));
     if (admin && user.role !== "admin") { location.replace("/meetings.html"); return null; }
     return user;
   } catch (_) { return null; }

@@ -1,6 +1,6 @@
 # Persian Meeting Platform
 
-Backend پایه سامانه Meeting Intelligence با FastAPI، PostgreSQL و MinIO به‌همراه UI سبک و مستقل. در این فاز تنها قابلیت‌های سبک API پیاده‌سازی شده‌اند و هیچ runtime یا کتابخانه ML در image بک‌اند نصب نمی‌شود.
+Backend پایه سامانه Meeting Intelligence با FastAPI، PostgreSQL و MinIO به‌همراه UI و worker مستقل ASR. هیچ runtime یا کتابخانه ML در image بک‌اند نصب نمی‌شود و ارتباط ASR فقط از طریق API سازگار با OpenAI انجام می‌شود.
 
 ## قابلیت‌های این فاز
 
@@ -17,6 +17,9 @@ Backend پایه سامانه Meeting Intelligence با FastAPI، PostgreSQL و 
 - structured logging روی stdout/stderr با JSON در production/test و خروجی خوانا در development
 - حفظ `request_id` و `correlation_id` در پاسخ HTTP، Log و History
 - migration با Alembic؛ شامل پذیرش schema قدیمی ساخته‌شده توسط `create_all`
+- شروع صریح پردازش Meeting و اجرای asynchronous تبدیل صوت به متن در سرویس مستقل ASR
+- سه تلاش پایدار و قابل مشاهده برای خطاهای موقت ASR و توقف فوری برای خطاهای دائمی
+- ذخیره transcript استاندارد و متن خام در MinIO و provenance آن‌ها در PostgreSQL
 
 ## اجرا با Docker Compose
 
@@ -121,6 +124,12 @@ GET    /voices/{voice_id}
 DELETE /voices/{voice_id}
 GET    /voices                         # admin only
 
+POST   /meetings/{meeting_id}/process # 202 Accepted
+GET    /meetings/{meeting_id}/processing
+GET    /processing/jobs/{job_id}
+GET    /voices/{voice_id}/results
+GET    /results/{result_id}
+
 GET    /history                        # admin only, immutable
 ```
 
@@ -154,6 +163,31 @@ LOG_FORMAT=auto            # auto | json | console
 
 History یک audit trail تجاری جدا از log عملیاتی است، ولی `request_id` و `correlation_id` مشترک دارد. ادمین می‌تواند `GET /history` را علاوه بر event/actor با queryهای `request_id` و `correlation_id` فیلتر کند.
 
+## پردازش ASR
+
+آپلود Voice به‌تنهایی پردازش را شروع نمی‌کند. کاربر دارای مجوز مدیریت Voice با `POST /meetings/{meeting_id}/process` برای هر Voice یک Result، Job و Attempt پایدار ایجاد می‌کند و پاسخ سریع `202` می‌گیرد. سرویس مستقل `asr` صف PostgreSQL را poll می‌کند، فایل را از MinIO می‌خواند و به endpoint سازگار با OpenAI در `/audio/transcriptions` می‌فرستد.
+
+تنظیمات لازم در `.env`:
+
+```text
+BASE_URL=https://example.com/v1
+TRANSCRIPT_API_KEY=...
+TRANSCRIPT_MODEL_NAME=whisper-large-v3-persian
+ASR_REQUEST_TIMEOUT_SECONDS=600
+ASR_MAX_ATTEMPTS=3
+ASR_POLL_INTERVAL_SECONDS=2
+ASR_WORKER_NAME=asr-worker
+```
+
+خروجی استاندارد `canonical-transcript/v1` و فایل متن خام با مسیر deterministic زیر در bucket خروجی MinIO ذخیره می‌شوند و bucket، key، checksum و producer job در PostgreSQL ثبت می‌شود:
+
+```text
+meetings/{meeting_id}/results/{result_id}/transcript.json
+meetings/{meeting_id}/results/{result_id}/raw.txt
+```
+
+خطاهای timeout، network، HTTP 429 و HTTP 5xx تا سقف سه Attempt پیگیری می‌شوند؛ خطای احراز هویت و پاسخ نامعتبر retry نمی‌شوند. رخدادهای `processing.queued`، `processing.started`، `processing.retry_queued`، `processing.succeeded` و `processing.failed` در History ثبت می‌شوند.
+
 ## Migration
 
 برای اجرای دستی migration:
@@ -178,27 +212,39 @@ test_ui.py
 test_migrations.py
 test_architecture.py
 test_compose_integration.py
+test_asr.py
+test_processing.py
+test_asr_benchmark.py            # فقط اجرای دستی؛ خارج از CI
 ```
 
 اجرای کامل این فاز:
 
 ```bash
-PYTHONPATH=fast_Backend uv run pytest -q test/
+uv run pytest -q -m "not asr_benchmark" test/
 ```
+
+بنچمارک زنده کیفیت فقط به‌صورت دستی و روی ۵۰ نمونه اول اجرا می‌شود. این فرمان فایل‌های نمونه را به API خارجی تنظیم‌شده ارسال می‌کند:
+
+```bash
+RUN_ASR_BENCHMARK=1 uv run pytest -q -m asr_benchmark test/test_asr_benchmark.py
+```
+
+WER و CER به‌صورت corpus-level پس از نرمال‌سازی فارسی محاسبه می‌شوند؛ شرط‌های ثبت‌شده در تست `WER < 25%` و `CER < 8%` هستند. این تست به‌طور صریح از CI حذف شده است.
 
 در فازهای بعد، تست جدید به فایل حوزه مربوط اضافه می‌شود و همان مجموعه حوزه برای جلوگیری از regression اجرا خواهد شد.
 
 ## CI/CD
 
-workflow موجود در `.github/workflows/ci-cd.yml` اکنون دو image مستقل `api` و `ui` را در matrix می‌سازد. تست‌های Python پیش از build اجرا می‌شوند؛ تست Compose روی PostgreSQL و MinIO واقعی فقط برای API اجرا می‌شود؛ سپس در push به `main` یا tag نسخه، همان imageهای ساخته‌شده به GHCR منتشر می‌شوند:
+workflow موجود در `.github/workflows/ci-cd.yml` اکنون سه image مستقل `api`، `ui` و `asr` را در matrix می‌سازد. تست‌های Python پیش از build اجرا می‌شوند؛ تست Compose روی PostgreSQL و MinIO واقعی فقط برای API اجرا می‌شود؛ سپس در push به `main` یا tag نسخه، همان imageهای ساخته‌شده به GHCR منتشر می‌شوند:
 
 ```text
 ghcr.io/<owner>/asr-arusha-api
 ghcr.io/<owner>/asr-arusha-ui
+ghcr.io/<owner>/asr-arusha-worker
 ```
 
 برای pull request فقط build و test انجام می‌شود و image منتشر نمی‌شود. Compose integration عمداً سرویس‌های `postgres minio api` را صریح بالا می‌آورد تا image مستقل UI در job جداگانه باعث تداخل در تست backend نشود.
 
 ## مرز ML
 
-هیچ dependency، runtime یا تنظیمات اجرایی مدل در پروژه بک‌اند وجود ندارد. در فاز worker، سرویس ML باید manifest، image و محیط مستقل خودش را داشته باشد؛ ارتباط آن با backend فقط از مرز API/پیام تعریف‌شده انجام خواهد شد.
+هیچ dependency یا runtime مدل در سرویس backend وجود ندارد. worker نیز مدل را import یا اجرا نمی‌کند و فقط از طریق adapter HTTP با سرویس ASR خارجی ارتباط دارد؛ manifest، Dockerfile و process آن از API و UI جدا هستند.

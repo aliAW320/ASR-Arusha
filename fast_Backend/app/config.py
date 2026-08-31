@@ -24,7 +24,16 @@ class Settings(BaseSettings):
     minio_root_password: SecretStr = SecretStr("minioadmin")
     minio_secure: bool = False
     minio_meetings_bucket: str = "meetings"
+    minio_exports_bucket: str = "transcript-exports"
     voice_upload_max_bytes: int = 500 * 1024 * 1024
+
+    base_url: str = "https://llm.irdc.arusha.ir/v1"
+    transcript_api_key: SecretStr | None = None
+    transcript_model_name: str = "whisper-large-v3-persian"
+    asr_request_timeout_seconds: int = Field(default=600, ge=30)
+    asr_max_attempts: int = Field(default=3, ge=1, le=10)
+    asr_poll_interval_seconds: float = Field(default=2.0, gt=0)
+    asr_worker_name: str = "asr-worker"
 
     @property
     def json_logs_enabled(self) -> bool:

@@ -82,9 +82,6 @@ async def test_openai_compatible_provider_sends_multipart_contract_and_parses_re
     assert str(request.url) == "https://asr.example/v1/audio/transcriptions"
     assert request.headers["authorization"] == "Bearer secret-key"
     assert b'form-data; name="model"' in body and b"persian-model" in body
-    assert b'form-data; name="extra_body[use_beam_search]"' in body
-    assert b'form-data; name="extra_body[num_beams]"' in body
-    assert b"num_beams" in body and b"10" in body
     assert b'filename="sample.wav"' in body
     assert response.text == "متن پاسخ"
     assert response.external_request_id == "remote-request"

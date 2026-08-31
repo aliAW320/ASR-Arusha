@@ -7,7 +7,13 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.database import get_db_session
 from app.main import app
-from app.models import History, VoiceFile
+from app.models import (
+    History,
+    ProcessingAttempt,
+    ProcessingJob,
+    VoiceFile,
+    VoiceStatus,
+)
 from conftest import authorization, register_user
 
 
@@ -28,10 +34,16 @@ async def test_audio_upload_is_stored_in_minio_and_postgres(client, session):
 
     assert response.status_code == 201, response.text
     voice = await session.get(VoiceFile, uuid.UUID(response.json()["id"]))
+    assert voice.status == VoiceStatus.PENDING
     assert voice.minio_key == response.json()["minio_key"]
     assert client.storage.objects[(voice.minio_bucket, voice.minio_key)] == content
+    assert await session.scalar(select(ProcessingJob.id)) is not None
+    assert await session.scalar(select(ProcessingAttempt.id)) is not None
     assert await session.scalar(
         select(History.id).where(History.event_type == "voice.uploaded")
+    ) is not None
+    assert await session.scalar(
+        select(History.id).where(History.event_type == "processing.queued")
     ) is not None
 
 
@@ -50,6 +62,34 @@ async def test_non_audio_upload_is_rejected(client):
     )
     assert response.status_code == 415
     assert client.storage.objects == {}
+
+
+@pytest.mark.asyncio
+async def test_authorized_contributor_upload_also_enters_processing_queue(client, session):
+    owner = await register_user(client, "queue-owner@example.com")
+    contributor = await register_user(client, "queue-contributor@example.com")
+    meeting = (
+        await client.post(
+            "/meetings", headers=authorization(owner), json={"title": "Queued audio"}
+        )
+    ).json()
+    added = await client.post(
+        f"/meetings/{meeting['id']}/members",
+        headers=authorization(owner),
+        json={"email": contributor["user"]["email"], "role": "contributor"},
+    )
+    assert added.status_code == 201, added.text
+
+    response = await client.post(
+        f"/meetings/{meeting['id']}/voices",
+        headers=authorization(contributor),
+        files={"upload": ("contributor.wav", b"audio", "audio/wav")},
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["status"] == "pending"
+    assert await session.scalar(select(ProcessingJob.id)) is not None
+    assert await session.scalar(select(ProcessingAttempt.id)) is not None
 
 
 @pytest.mark.asyncio

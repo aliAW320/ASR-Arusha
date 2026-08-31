@@ -15,4 +15,4 @@ COPY fast_Backend/app ./app
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "uv run --locked --no-dev alembic upgrade head && exec uv run --locked --no-dev uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "uv run --locked --no-dev alembic upgrade head && if [ -n \"${ADMIN_EMAIL:-}\" ] && [ -n \"${ADMIN_PASSWORD:-}\" ]; then uv run --locked --no-dev python -m app.cli.create_admin; fi && exec uv run --locked --no-dev uvicorn app.main:app --host 0.0.0.0 --port 8000"]

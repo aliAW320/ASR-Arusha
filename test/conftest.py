@@ -33,6 +33,11 @@ class FakeObjectStorage:
         self.removed.append((bucket, object_key))
         self.objects.pop((bucket, object_key), None)
 
+    async def download_object(self, bucket, object_key, destination):
+        destination.seek(0)
+        destination.write(self.objects[(bucket, object_key)])
+        destination.seek(0)
+
 
 @pytest.fixture
 def anyio_backend():

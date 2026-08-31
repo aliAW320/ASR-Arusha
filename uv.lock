@@ -359,6 +359,7 @@ dependencies = [
     { name = "asyncpg" },
     { name = "email-validator" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "minio" },
     { name = "pwdlib", extra = ["argon2"] },
     { name = "pydantic-settings" },
@@ -371,7 +372,6 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "aiosqlite" },
-    { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
@@ -382,6 +382,7 @@ requires-dist = [
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "email-validator", specifier = ">=2.3.0" },
     { name = "fastapi", specifier = ">=0.141.1" },
+    { name = "httpx", specifier = ">=0.28" },
     { name = "minio", specifier = ">=7.2.20" },
     { name = "pwdlib", extras = ["argon2"], specifier = ">=0.3.0" },
     { name = "pydantic-settings" },
@@ -394,7 +395,6 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "aiosqlite", specifier = ">=0.21,<0.22" },
-    { name = "httpx", specifier = ">=0.28" },
     { name = "pytest", specifier = ">=8.4" },
     { name = "pytest-asyncio", specifier = ">=1.1" },
 ]

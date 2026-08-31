@@ -2,3 +2,6 @@ a { color: inherit; text-decoration: none; }
 .tab { text-align: center; }
 .meeting-card { color: var(--ink); }
 .text-button { display: inline-block; }
+.transcript-page-panel { max-width: 1000px; margin-inline: auto; }
+.transcript-full { white-space: pre-wrap; line-height: 2.2; font-size: 1.1rem; background: var(--surface-muted, #f7f6f1); border-radius: 16px; padding: 2rem; min-height: 280px; }
+.transcript-text { white-space: pre-wrap; line-height: 1.8; margin: .7rem 0; }

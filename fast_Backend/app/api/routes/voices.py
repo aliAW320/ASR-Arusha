@@ -23,6 +23,7 @@ from ...services.permissions import (
     is_admin,
     require_meeting_permission,
 )
+from ...services.processing import queue_voice_transcription
 from ...storage.base import ObjectStorage
 from ...storage.minio import get_object_storage
 
@@ -163,6 +164,17 @@ async def upload_voice(
                 actor=actor,
                 request=request,
                 event_data={"filename": upload.filename, "size_bytes": size_bytes},
+                affected_meetings=[meeting_for_event],
+                affected_voices=[voice],
+            )
+            await queue_voice_transcription(session, voice, settings)
+            add_history_event(
+                session,
+                event_type="processing.queued",
+                description="Voice transcription queued after upload",
+                actor=actor,
+                request=request,
+                event_data={"stage": "transcription", "trigger": "voice.upload"},
                 affected_meetings=[meeting_for_event],
                 affected_voices=[voice],
             )

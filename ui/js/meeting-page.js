@@ -6,15 +6,35 @@ let meeting;
 if (!meetingId) location.replace("/meetings.html");
 
 function roleLabel(role) { return ({ owner: "مالک", contributor: "همکار", viewer: "مشاهده‌گر" })[role] || role; }
-function renderVoices(voices) {
-  $("#voice-list").innerHTML = voices.length ? voices.map((voice) => `<div class="list-row"><div class="list-row-main"><span class="file-icon">♫</span><div><strong>${escapeHtml(voice.original_filename || "فایل صوتی")}</strong><small>${voice.size_bytes ? `${faNumber((voice.size_bytes / 1048576).toFixed(2))} مگابایت` : "اندازه نامشخص"} · ${escapeHtml(voice.status)}</small></div></div><button class="delete-icon" data-delete-voice="${voice.id}">×</button></div>`).join("") : `<div class="empty-state"><span>♫</span><p>فایل صوتی ثبت نشده است.</p></div>`;
+function renderVoices(voices, transcripts) {
+  $("#voice-list").innerHTML = voices.length ? voices.map((voice) => {
+    const transcript = transcripts[voice.id];
+    return `<div class="list-row"><div class="list-row-main"><span class="file-icon">♫</span><div><strong>${escapeHtml(voice.original_filename || "فایل صوتی")}</strong><small>${voice.size_bytes ? `${faNumber((voice.size_bytes / 1048576).toFixed(2))} مگابایت` : "اندازه نامشخص"} · ${escapeHtml(voice.status)}</small>${transcript ? `<p class="transcript-text">${escapeHtml(transcript.text)}</p><a class="text-button" href="/transcript.html?result_id=${encodeURIComponent(transcript.id)}">مشاهده متن کامل ←</a>` : ""}</div></div><button class="delete-icon" data-delete-voice="${voice.id}">×</button></div>`;
+  }).join("") : `<div class="empty-state"><span>♫</span><p>فایل صوتی ثبت نشده است.</p></div>`;
 }
 function renderMembers(members) {
   $("#member-list").innerHTML = members.map((member) => `<div class="list-row"><div class="list-row-main"><span class="avatar">${escapeHtml((member.user.full_name || member.user.email).slice(0, 1))}</span><div><strong>${escapeHtml(member.user.full_name || member.user.email)}</strong><small>${escapeHtml(member.user.email)} · ${roleLabel(member.role)}</small></div></div>${member.role === "owner" ? `<span class="status-pill">مالک</span>` : `<div class="row-actions"><select data-member-role="${member.user.id}"><option value="viewer" ${member.role === "viewer" ? "selected" : ""}>مشاهده‌گر</option><option value="contributor" ${member.role === "contributor" ? "selected" : ""}>همکار</option></select><button class="delete-icon" data-delete-member="${member.user.id}">×</button></div>`}</div>`).join("");
 }
 async function refreshCollections() {
   const [members, voices] = await Promise.all([api(`/meetings/${meetingId}/members`), api(`/meetings/${meetingId}/voices`)]);
-  renderMembers(members); renderVoices(voices);
+  renderMembers(members);
+  const transcripts = {};
+  await Promise.all(voices.map(async (voice) => {
+    const results = await api(`/voices/${voice.id}/results`);
+    const latest = results.find((result) => result.completed_at);
+    if (latest) {
+      try { transcripts[voice.id] = { id: latest.id, text: (await api(`/results/${latest.id}/transcript`)).text }; }
+      catch (_) { /* result may finish between polling calls */ }
+    }
+  }));
+  renderVoices(voices, transcripts);
+}
+let refreshInFlight = false;
+async function pollCollections() {
+  if (refreshInFlight || document.visibilityState === "hidden") return;
+  refreshInFlight = true;
+  try { await refreshCollections(); } catch (_) { /* keep the current view during transient API errors */ }
+  finally { refreshInFlight = false; }
 }
 async function loadMeeting() {
   try {
@@ -26,6 +46,7 @@ async function loadMeeting() {
 }
 const user = await requireUser();
 if (user) { renderSidebar(user); loadMeeting(); }
+setInterval(pollCollections, 3000);
 
 const modal = $("#meeting-modal");
 $("#edit-meeting").addEventListener("click", () => {

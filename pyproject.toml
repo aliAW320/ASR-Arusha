@@ -8,6 +8,7 @@ dependencies = [
     "asyncpg>=0.31.0",
     "email-validator>=2.3.0",
     "fastapi>=0.141.1",
+    "httpx>=0.28",
     "minio>=7.2.20",
     "pwdlib[argon2]>=0.3.0",
     "pydantic-settings",
@@ -20,7 +21,6 @@ dependencies = [
 [dependency-groups]
 dev = [
     "aiosqlite>=0.21,<0.22",
-    "httpx>=0.28",
     "pytest>=8.4",
     "pytest-asyncio>=1.1",
 ]
@@ -29,5 +29,8 @@ dev = [
 package = false
 
 [tool.pytest.ini_options]
-pythonpath = ["fast_Backend"]
+pythonpath = ["fast_Backend", "src"]
 testpaths = ["test"]
+markers = [
+    "asr_benchmark: opt-in live ASR quality benchmark; never run in CI",
+]

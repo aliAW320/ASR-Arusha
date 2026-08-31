@@ -12,3 +12,10 @@ class ObjectStorage(Protocol):
     ) -> None: ...
 
     async def remove_object(self, bucket: str, object_key: str) -> None: ...
+
+    async def download_object(
+        self,
+        bucket: str,
+        object_key: str,
+        destination: BinaryIO,
+    ) -> None: ...

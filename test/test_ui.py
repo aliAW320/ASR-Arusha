@@ -32,6 +32,7 @@ def test_ui_exposes_current_backend_flows_without_external_assets():
     assert 'accept="audio/*"' in pages["meeting.html"]
     assert 'id="history-list"' in pages["history.html"]
     assert 'id="transcript-content"' in pages["transcript.html"]
+    assert 'id="processing-error"' in pages["transcript.html"]
     assert all("https://" not in page for page in pages.values())
 
     for endpoint_fragment in (
@@ -50,6 +51,8 @@ def test_ui_exposes_current_backend_flows_without_external_assets():
     assert "localStorage" not in javascript
     assert "sessionStorage" in javascript
     assert "transcript-page.js" in javascript or (ROOT / "ui/js/transcript-page.js").is_file()
+    assert 'speaker.textContent = segment.speaker_id' in javascript
+    assert '$("#processing-error-message").textContent = error.message' in javascript
 
 
 def test_each_ui_page_has_its_own_module():

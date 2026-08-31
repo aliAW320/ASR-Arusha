@@ -9,12 +9,14 @@ from sqlalchemy.orm import selectinload
 from app.config import get_settings
 from app.models import (
     ExternalIntegration,
+    DiarizationSpeaker,
     History,
     ModelDefinition,
     ModelRuntime,
     ProcessingAttempt,
     ProcessingAttemptStatus,
     ProcessingJob,
+    ProcessingStage,
     Result,
     ResultArtifact,
     VoiceFile,
@@ -22,6 +24,8 @@ from app.models import (
 )
 from asr.provider import TranscriptionError, TranscriptionResponse
 from asr.worker import ASRWorker
+from diarization.provider import DiarizationTurn
+from diarization.worker import DiarizationWorker
 from conftest import authorization, register_user
 
 
@@ -144,7 +148,13 @@ class SuccessfulProvider:
             text="سلام دنیا",
             language="fa",
             segments=[{"id": 0, "start": 0, "end": 1, "text": "سلام دنیا"}],
-            raw_response={"text": "سلام دنیا"},
+            raw_response={
+                "text": "سلام دنیا",
+                "words": [
+                    {"word": "سلام", "start": 0.05, "end": 0.4},
+                    {"word": "دنیا", "start": 0.6, "end": 0.95},
+                ],
+            },
             external_request_id="remote-123",
         )
 
@@ -181,9 +191,11 @@ async def test_worker_completes_job_and_persists_canonical_and_raw_artifacts(
     assert len(results.json()) == 1
     assert transcript.status_code == 200
     assert transcript.json()["text"] == "سلام دنیا"
+    assert transcript.json()["processing_status"] == "queued"
     assert {item["artifact_type"] for item in results.json()[0]["artifacts"]} == {
         "transcript_json",
         "raw_text",
+        "word_timestamps_json",
     }
     transcript_artifact = next(
         item for item in results.json()[0]["artifacts"] if item["artifact_type"] == "transcript_json"
@@ -198,6 +210,114 @@ async def test_worker_completes_job_and_persists_canonical_and_raw_artifacts(
     async with session_factory() as session:
         event_types = set(await session.scalars(select(History.event_type)))
         assert {"processing.started", "processing.succeeded"} <= event_types
+
+
+class SuccessfulDiarizationProvider:
+    async def diarize(self, audio_path):
+        assert audio_path.read_bytes() == b"RIFF-audio"
+        return [
+            DiarizationTurn(0, 500, "SPEAKER_00"),
+            DiarizationTurn(500, 1000, "SPEAKER_01"),
+        ]
+
+
+@pytest.mark.asyncio
+async def test_diarization_worker_finishes_pipeline_and_exposes_speaker_transcript(
+    client, session_factory
+):
+    owner, meeting, voice = await _meeting_with_voice(client, "diarization-owner@example.com")
+    asr_worker = ASRWorker(
+        session_factory=session_factory,
+        storage=client.storage,
+        settings=get_settings(),
+        provider_factory=lambda _: SuccessfulProvider(),
+    )
+    diarization_worker = DiarizationWorker(
+        session_factory=session_factory,
+        storage=client.storage,
+        settings=get_settings(),
+        provider_factory=lambda _: SuccessfulDiarizationProvider(),
+    )
+
+    assert await asr_worker.run_once() is True
+    assert await diarization_worker.run_once() is True
+
+    results = await client.get(
+        f"/voices/{voice['id']}/results", headers=authorization(owner)
+    )
+    result = results.json()[0]
+    transcript = await client.get(
+        f"/results/{result['id']}/transcript", headers=authorization(owner)
+    )
+    assert transcript.status_code == 200
+    assert transcript.json()["schema_version"] == "speaker-transcript/v1"
+    assert transcript.json()["processing_status"] == "succeeded"
+    assert [segment["speaker_id"] for segment in transcript.json()["segments"]] == [
+        "SPEAKER_00",
+        "SPEAKER_01",
+    ]
+    assert {item["artifact_type"] for item in result["artifacts"]} == {
+        "transcript_json",
+        "raw_text",
+        "word_timestamps_json",
+        "diarization_json",
+        "aligned_transcript_json",
+    }
+    async with session_factory() as session:
+        stored_voice = await session.get(VoiceFile, uuid.UUID(voice["id"]))
+        stages = set(await session.scalars(select(ProcessingJob.stage)))
+        labels = set(await session.scalars(select(DiarizationSpeaker.label)))
+        assert stored_voice.status == VoiceStatus.FINISHED
+        assert stages == {ProcessingStage.TRANSCRIPTION, ProcessingStage.DIARIZATION}
+        assert labels == {"SPEAKER_00", "SPEAKER_01"}
+
+
+class NoTimestampProvider:
+    async def transcribe(self, *_args, **_kwargs):
+        return TranscriptionResponse(
+            text="متن بدون زمان",
+            language="fa",
+            segments=[{"id": 0, "start": 0, "end": 1, "text": "متن بدون زمان"}],
+            raw_response={"text": "متن بدون زمان"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_missing_word_timestamps_stops_pipeline_and_exposes_exact_ui_error(
+    client, session_factory
+):
+    owner, meeting, voice = await _meeting_with_voice(client, "timestamp-error@example.com")
+    asr_worker = ASRWorker(
+        session_factory=session_factory,
+        storage=client.storage,
+        settings=get_settings(),
+        provider_factory=lambda _: NoTimestampProvider(),
+    )
+    diarization_worker = DiarizationWorker(
+        session_factory=session_factory,
+        storage=client.storage,
+        settings=get_settings(),
+        provider_factory=lambda _: SuccessfulDiarizationProvider(),
+    )
+
+    assert await asr_worker.run_once() is True
+    assert await diarization_worker.run_once() is True
+    assert await diarization_worker.run_once() is False
+
+    results = await client.get(
+        f"/voices/{voice['id']}/results", headers=authorization(owner)
+    )
+    transcript = await client.get(
+        f"/results/{results.json()[0]['id']}/transcript", headers=authorization(owner)
+    )
+    assert transcript.status_code == 200
+    assert transcript.json()["schema_version"] == "canonical-transcript/v1"
+    assert transcript.json()["processing_status"] == "failed"
+    assert transcript.json()["processing_error"]["code"] == "missing_word_timestamps"
+    assert "word timestamps" in transcript.json()["processing_error"]["message"]
+    async with session_factory() as session:
+        stored_voice = await session.get(VoiceFile, uuid.UUID(voice["id"]))
+        assert stored_voice.status == VoiceStatus.ERROR
 
 
 class FlakyProvider:
@@ -242,7 +362,7 @@ async def test_worker_retries_retryable_failure_three_times_as_append_only_attem
             ProcessingAttemptStatus.FAILED,
             ProcessingAttemptStatus.SUCCEEDED,
         ]
-        assert await session.scalar(select(func.count(ResultArtifact.id))) == 2
+        assert await session.scalar(select(func.count(ResultArtifact.id))) == 3
 
 
 class PermanentFailureProvider:

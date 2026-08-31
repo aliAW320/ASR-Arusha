@@ -21,7 +21,7 @@ async function refreshCollections() {
   const transcripts = {};
   await Promise.all(voices.map(async (voice) => {
     const results = await api(`/voices/${voice.id}/results`);
-    const latest = results.find((result) => result.completed_at);
+    const latest = results.find((result) => result.artifacts.some((artifact) => artifact.artifact_type === "transcript_json"));
     if (latest) {
       try { transcripts[voice.id] = { id: latest.id, text: (await api(`/results/${latest.id}/transcript`)).text }; }
       catch (_) { /* result may finish between polling calls */ }

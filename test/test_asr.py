@@ -82,9 +82,31 @@ async def test_openai_compatible_provider_sends_multipart_contract_and_parses_re
     assert str(request.url) == "https://asr.example/v1/audio/transcriptions"
     assert request.headers["authorization"] == "Bearer secret-key"
     assert b'form-data; name="model"' in body and b"persian-model" in body
+    assert b'form-data; name="timestamp_granularities[]"' in body
+    assert b"word" in body and b"segment" in body
     assert b'filename="sample.wav"' in body
     assert response.text == "متن پاسخ"
     assert response.external_request_id == "remote-request"
+
+
+def test_canonical_transcript_accepts_provider_level_word_timestamps():
+    payload = canonical_transcript(
+        TranscriptionResponse(
+            text="سلام",
+            language="fa",
+            segments=[{"id": 0, "start": 0, "end": 1, "text": "سلام"}],
+            raw_response={
+                "text": "سلام",
+                "words": [{"word": "سلام", "start": 0.1, "end": 0.8}],
+            },
+        ),
+        source_id="voice",
+        model_name="model",
+        inference_duration_seconds=1,
+        audio_duration_seconds=1,
+    )
+
+    assert payload["words"] == [{"text": "سلام", "start_ms": 100, "end_ms": 800}]
 
 
 @pytest.mark.asyncio

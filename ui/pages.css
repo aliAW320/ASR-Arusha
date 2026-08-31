@@ -4,4 +4,12 @@ a { color: inherit; text-decoration: none; }
 .text-button { display: inline-block; }
 .transcript-page-panel { max-width: 1000px; margin-inline: auto; }
 .transcript-full { white-space: pre-wrap; line-height: 2.2; font-size: 1.1rem; background: var(--surface-muted, #f7f6f1); border-radius: 16px; padding: 2rem; min-height: 280px; }
+.speaker-transcript { display: grid; gap: 1rem; white-space: normal; }
+.speaker-turn { padding: 1rem 1.2rem; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.speaker-turn header { display: flex; justify-content: space-between; gap: 1rem; color: var(--pine); }
+.speaker-turn header span { color: var(--muted); font-size: .8rem; direction: ltr; }
+.speaker-turn p { margin: .75rem 0 0; line-height: 2; white-space: pre-wrap; }
+.processing-error { margin: 1rem 0; padding: 1rem 1.2rem; border: 1px solid #e6b9b4; border-radius: 14px; background: #faebe8; color: var(--danger); }
+.processing-error strong, .processing-error code { display: block; margin-bottom: .5rem; }
+.processing-error p { margin: 0; line-height: 1.8; white-space: pre-wrap; }
 .transcript-text { white-space: pre-wrap; line-height: 1.8; margin: .7rem 0; }

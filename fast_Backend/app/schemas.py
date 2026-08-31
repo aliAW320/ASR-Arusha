@@ -201,5 +201,11 @@ class TranscriptResponse(BaseModel):
     schema_version: str
     language: str
     text: str
+    source_id: str | None = None
+    model: str | None = None
+    diarization_model: str | None = None
+    words: list[dict] = Field(default_factory=list)
     segments: list[dict]
     metrics: dict
+    processing_status: str
+    processing_error: dict | None = None

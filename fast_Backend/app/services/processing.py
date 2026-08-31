@@ -86,6 +86,67 @@ async def ensure_transcription_registry(
     return model, integration
 
 
+async def ensure_diarization_registry(
+    session: AsyncSession,
+    settings: Settings,
+) -> ModelDefinition:
+    runtime = await session.scalar(
+        select(ModelRuntime).where(ModelRuntime.name == "pyannote.audio-local")
+    )
+    if runtime is None:
+        runtime = ModelRuntime(
+            name="pyannote.audio-local",
+            kind=ModelRuntimeKind.LOCAL,
+        )
+        session.add(runtime)
+        await session.flush()
+
+    model = await session.scalar(
+        select(ModelDefinition).where(
+            ModelDefinition.runtime_id == runtime.id,
+            ModelDefinition.task_type == ModelTaskType.DIARIZATION,
+            ModelDefinition.name == settings.diarization_model_name,
+            ModelDefinition.version == settings.diarization_model_version,
+        )
+    )
+    if model is None:
+        model = ModelDefinition(
+            runtime=runtime,
+            task_type=ModelTaskType.DIARIZATION,
+            name=settings.diarization_model_name,
+            version=settings.diarization_model_version,
+            source_uri=settings.diarization_model_name,
+        )
+        session.add(model)
+        await session.flush()
+    return model
+
+
+async def queue_result_diarization(
+    session: AsyncSession,
+    result: Result,
+    settings: Settings,
+    *,
+    depends_on: ProcessingJob,
+) -> ProcessingJob:
+    """Queue local speaker diarization after transcription artifacts exist."""
+    model = await ensure_diarization_registry(session, settings)
+    job = ProcessingJob(
+        result=result,
+        stage=ProcessingStage.DIARIZATION,
+        model=model,
+        dependencies=[depends_on],
+    )
+    attempt = ProcessingAttempt(
+        job=job,
+        attempt_number=1,
+        status=ProcessingAttemptStatus.QUEUED,
+    )
+    session.add_all([job, attempt])
+    await session.flush()
+    return job
+
+
 async def queue_meeting_transcription(
     session: AsyncSession,
     meeting: Meeting,

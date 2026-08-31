@@ -55,3 +55,20 @@ def test_asr_is_an_isolated_service_and_live_benchmark_is_excluded_from_ci():
     assert "COPY src/asr ./asr" in dockerfile
     assert "dockerfile: Docker/asr.Dockerfile" in workflow
     assert '-m "not asr_benchmark"' in workflow
+
+
+def test_pyannote_is_an_isolated_local_cpu_service():
+    compose = (PROJECT_ROOT / "docker-compose.yml").read_text()
+    dockerfile = (PROJECT_ROOT / "Docker" / "diarization.Dockerfile").read_text()
+    requirements = (
+        PROJECT_ROOT / "Docker" / "diarization.requirements.lock"
+    ).read_text()
+
+    assert "dockerfile: Docker/diarization.Dockerfile" in compose
+    assert "DIARIZATION_DEVICE: cpu" in compose
+    assert 'python", "-m", "diarization.worker"' in dockerfile
+    assert "COPY src/diarization ./diarization" in dockerfile
+    assert "pyannote-audio==3.3.2" in requirements
+    assert "torch-2.5.1%2Bcpu" in requirements
+    assert "torchaudio-2.5.1%2Bcpu" in requirements
+    assert "nvidia-" not in requirements

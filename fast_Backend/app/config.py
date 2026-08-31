@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import EmailStr, Field, SecretStr
+from pydantic import AliasChoices, EmailStr, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,6 +34,17 @@ class Settings(BaseSettings):
     asr_max_attempts: int = Field(default=3, ge=1, le=10)
     asr_poll_interval_seconds: float = Field(default=2.0, gt=0)
     asr_worker_name: str = "asr-worker"
+
+    huggingface_token: SecretStr | None = None
+    diarization_model_name: str = Field(
+        default="pyannote/speaker-diarization-3.1",
+        validation_alias=AliasChoices("DIARIZATION_MODEL_NAME", "DIARIZATION_MODEL"),
+    )
+    diarization_model_version: str = "3.1"
+    diarization_device: Literal["cpu", "cuda"] = "cpu"
+    diarization_max_attempts: int = Field(default=3, ge=1, le=10)
+    diarization_poll_interval_seconds: float = Field(default=2.0, gt=0)
+    diarization_worker_name: str = "diarization-worker"
 
     @property
     def json_logs_enabled(self) -> bool:

@@ -59,6 +59,7 @@ class OpenAICompatibleTranscriptionProvider:
                     "model": model,
                     "language": "fa",
                     "response_format": "verbose_json",
+                    "timestamp_granularities[]": ["word", "segment"],
                     "extra_body[use_beam_search]": "true",
                     "extra_body[num_beams]": "5",
                 },

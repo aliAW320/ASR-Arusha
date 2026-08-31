@@ -11,7 +11,15 @@ from sqlalchemy.orm import selectinload
 from ...config import get_settings
 from ...database import get_db_session
 from ...dependencies import get_current_user
-from ...models import ProcessingJob, Result, User, VoiceFile
+from ...models import (
+    ProcessingAttemptStatus,
+    ProcessingJob,
+    ProcessingStage,
+    Result,
+    ResultArtifactType,
+    User,
+    VoiceFile,
+)
 from ...schemas import ProcessingJobResponse, ResultResponse, TranscriptResponse
 from ...services.audit import add_history_event
 from ...services.permissions import MeetingPermission, is_admin, require_meeting_permission
@@ -150,12 +158,34 @@ async def get_result_transcript(
     storage: Annotated[ObjectStorage, Depends(get_object_storage)],
 ):
     result = await session.scalar(
-        select(Result).options(selectinload(Result.artifacts), selectinload(Result.voice)).where(Result.id == result_id)
+        select(Result)
+        .options(
+            selectinload(Result.artifacts),
+            selectinload(Result.voice),
+            selectinload(Result.processing_jobs).selectinload(ProcessingJob.attempts),
+        )
+        .where(Result.id == result_id)
     )
     if result is None:
         raise HTTPException(status_code=404, detail="Result not found")
     await _require_voice_access(session, current_user, result.voice)
-    artifact = next((item for item in result.artifacts if item.artifact_type.value == "transcript_json"), None)
+    artifact = next(
+        (
+            item
+            for item in result.artifacts
+            if item.artifact_type == ResultArtifactType.ALIGNED_TRANSCRIPT_JSON
+        ),
+        None,
+    )
+    if artifact is None:
+        artifact = next(
+            (
+                item
+                for item in result.artifacts
+                if item.artifact_type == ResultArtifactType.TRANSCRIPT_JSON
+            ),
+            None,
+        )
     if artifact is None:
         raise HTTPException(status_code=409, detail="Transcript is not ready")
     buffer = io.BytesIO()
@@ -164,4 +194,39 @@ async def get_result_transcript(
         payload = json.loads(buffer.getvalue().decode("utf-8"))
     except Exception as error:
         raise HTTPException(status_code=503, detail="Transcript could not be read") from error
-    return TranscriptResponse(result_id=result.id, **payload)
+    diarization_job = next(
+        (
+            job
+            for job in sorted(result.processing_jobs, key=lambda item: item.created_at, reverse=True)
+            if job.stage == ProcessingStage.DIARIZATION
+        ),
+        None,
+    )
+    processing_status = "transcription_succeeded"
+    processing_error = None
+    if diarization_job is not None:
+        latest_attempt = diarization_job.latest_attempt
+        processing_status = (
+            latest_attempt.status.value if latest_attempt else ProcessingAttemptStatus.QUEUED.value
+        )
+        failed_attempt = next(
+            (
+                attempt
+                for attempt in reversed(diarization_job.attempts)
+                if attempt.error_code or attempt.error_message
+            ),
+            None,
+        )
+        if failed_attempt is not None:
+            processing_error = {
+                "stage": ProcessingStage.DIARIZATION.value,
+                "code": failed_attempt.error_code,
+                "message": failed_attempt.error_message,
+                "attempt_number": failed_attempt.attempt_number,
+            }
+    return TranscriptResponse(
+        result_id=result.id,
+        processing_status=processing_status,
+        processing_error=processing_error,
+        **payload,
+    )

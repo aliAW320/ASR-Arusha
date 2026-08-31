@@ -84,6 +84,11 @@ jobs:
             local_image: asr-arusha-worker:ci
             registry_image: asr-arusha-worker
             run_compose_integration: false
+          - name: diarization
+            dockerfile: Docker/diarization.Dockerfile
+            local_image: asr-arusha-diarization:ci
+            registry_image: asr-arusha-diarization
+            run_compose_integration: false
 
     steps:
       - name: Checkout repository

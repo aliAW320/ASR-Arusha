@@ -89,6 +89,11 @@ jobs:
             local_image: asr-arusha-diarization:ci
             registry_image: asr-arusha-diarization
             run_compose_integration: false
+          - name: cleaner
+            dockerfile: Docker/cleaner.Dockerfile
+            local_image: asr-arusha-cleaner:ci
+            registry_image: asr-arusha-cleaner
+            run_compose_integration: false
 
     steps:
       - name: Checkout repository

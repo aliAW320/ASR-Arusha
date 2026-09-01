@@ -75,3 +75,15 @@ def test_pyannote_is_an_isolated_local_cpu_service():
     assert "torch-2.5.1%2Bcpu" in requirements
     assert "torchaudio-2.5.1%2Bcpu" in requirements
     assert "nvidia-" not in requirements
+
+
+def test_cleaner_is_an_isolated_remote_api_worker():
+    compose = (PROJECT_ROOT / "docker-compose.yml").read_text()
+    dockerfile = (PROJECT_ROOT / "Docker" / "cleaner.Dockerfile").read_text()
+    workflow = (PROJECT_ROOT / ".github" / "workflows" / "ci-cd.yml").read_text()
+
+    assert "dockerfile: Docker/cleaner.Dockerfile" in compose
+    assert 'python", "-m", "cleaner.worker"' in dockerfile
+    assert "COPY src/cleaner ./cleaner" in dockerfile
+    assert "dockerfile: Docker/cleaner.Dockerfile" in workflow
+    assert "torch" not in dockerfile

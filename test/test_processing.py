@@ -19,11 +19,14 @@ from app.models import (
     ProcessingStage,
     Result,
     ResultArtifact,
+    ResultArtifactType,
     VoiceFile,
     VoiceStatus,
 )
 from asr.provider import TranscriptionError, TranscriptionResponse
 from asr.worker import ASRWorker
+from cleaner.provider import CleanerError, CleanerResponse
+from cleaner.worker import CleanerWorker
 from diarization.provider import DiarizationTurn
 from diarization.worker import DiarizationWorker
 from conftest import authorization, register_user
@@ -220,6 +223,18 @@ class SuccessfulDiarizationProvider:
         ]
 
 
+class SuccessfulCleanerProvider:
+    async def clean(self, segments, **kwargs):
+        assert kwargs["model"] == get_settings().cleaner_model_name
+        return CleanerResponse(
+            segments=[{**segment, "text": f"{segment['text']} اصلاح‌شده"} for segment in segments],
+            external_request_id="cleaner-remote-123",
+        )
+
+    async def aclose(self):
+        return None
+
+
 @pytest.mark.asyncio
 async def test_diarization_worker_finishes_pipeline_and_exposes_speaker_transcript(
     client, session_factory
@@ -237,9 +252,16 @@ async def test_diarization_worker_finishes_pipeline_and_exposes_speaker_transcri
         settings=get_settings(),
         provider_factory=lambda _: SuccessfulDiarizationProvider(),
     )
+    cleaner_worker = CleanerWorker(
+        session_factory=session_factory,
+        storage=client.storage,
+        settings=get_settings(),
+        provider_factory=lambda _: SuccessfulCleanerProvider(),
+    )
 
     assert await asr_worker.run_once() is True
     assert await diarization_worker.run_once() is True
+    assert await cleaner_worker.run_once() is True
 
     results = await client.get(
         f"/voices/{voice['id']}/results", headers=authorization(owner)
@@ -249,7 +271,7 @@ async def test_diarization_worker_finishes_pipeline_and_exposes_speaker_transcri
         f"/results/{result['id']}/transcript", headers=authorization(owner)
     )
     assert transcript.status_code == 200
-    assert transcript.json()["schema_version"] == "speaker-transcript/v1"
+    assert transcript.json()["schema_version"] == "cleaned-speaker-transcript/v1"
     assert transcript.json()["processing_status"] == "succeeded"
     assert [segment["speaker_id"] for segment in transcript.json()["segments"]] == [
         "SPEAKER_00",
@@ -257,18 +279,24 @@ async def test_diarization_worker_finishes_pipeline_and_exposes_speaker_transcri
     assert transcript.json()["segments"][0]["speaker_ids"] == [
         "SPEAKER_00",
     ]
+    assert transcript.json()["segments"][0]["text"].endswith("اصلاح‌شده")
     assert {item["artifact_type"] for item in result["artifacts"]} == {
         "transcript_json",
         "raw_text",
         "diarization_json",
         "aligned_transcript_json",
+        "cleaned_text",
     }
     async with session_factory() as session:
         stored_voice = await session.get(VoiceFile, uuid.UUID(voice["id"]))
         stages = set(await session.scalars(select(ProcessingJob.stage)))
         labels = set(await session.scalars(select(DiarizationSpeaker.label)))
         assert stored_voice.status == VoiceStatus.FINISHED
-        assert stages == {ProcessingStage.TRANSCRIPTION, ProcessingStage.DIARIZATION}
+        assert stages == {
+            ProcessingStage.TRANSCRIPTION,
+            ProcessingStage.DIARIZATION,
+            ProcessingStage.CLEANING,
+        }
         assert labels == {"SPEAKER_00", "SPEAKER_01"}
 
 
@@ -299,9 +327,16 @@ async def test_segment_timestamps_complete_pipeline_without_word_timestamps(
         settings=get_settings(),
         provider_factory=lambda _: SuccessfulDiarizationProvider(),
     )
+    cleaner_worker = CleanerWorker(
+        session_factory=session_factory,
+        storage=client.storage,
+        settings=get_settings(),
+        provider_factory=lambda _: SuccessfulCleanerProvider(),
+    )
 
     assert await asr_worker.run_once() is True
     assert await diarization_worker.run_once() is True
+    assert await cleaner_worker.run_once() is True
     assert await diarization_worker.run_once() is False
 
     results = await client.get(
@@ -311,7 +346,7 @@ async def test_segment_timestamps_complete_pipeline_without_word_timestamps(
         f"/results/{results.json()[0]['id']}/transcript", headers=authorization(owner)
     )
     assert transcript.status_code == 200
-    assert transcript.json()["schema_version"] == "speaker-transcript/v1"
+    assert transcript.json()["schema_version"] == "cleaned-speaker-transcript/v1"
     assert transcript.json()["processing_status"] == "succeeded"
     assert transcript.json()["processing_error"] is None
     assert transcript.json()["segments"][0]["speaker_ids"] == [
@@ -320,6 +355,127 @@ async def test_segment_timestamps_complete_pipeline_without_word_timestamps(
     async with session_factory() as session:
         stored_voice = await session.get(VoiceFile, uuid.UUID(voice["id"]))
         assert stored_voice.status == VoiceStatus.FINISHED
+
+
+class PermanentCleanerFailureProvider:
+    async def clean(self, *_args, **_kwargs):
+        raise CleanerError(
+            "cleaner rejected output",
+            code="cleaner_invalid_response",
+            retryable=False,
+        )
+
+    async def aclose(self):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_cleaner_failure_keeps_aligned_transcript_and_exposes_exact_error(
+    client, session_factory
+):
+    owner, _, voice = await _meeting_with_voice(client, "cleaner-error@example.com")
+    asr_worker = ASRWorker(
+        session_factory=session_factory,
+        storage=client.storage,
+        settings=get_settings(),
+        provider_factory=lambda _: SuccessfulProvider(),
+    )
+    diarization_worker = DiarizationWorker(
+        session_factory=session_factory,
+        storage=client.storage,
+        settings=get_settings(),
+        provider_factory=lambda _: SuccessfulDiarizationProvider(),
+    )
+    cleaner_worker = CleanerWorker(
+        session_factory=session_factory,
+        storage=client.storage,
+        settings=get_settings(),
+        provider_factory=lambda _: PermanentCleanerFailureProvider(),
+    )
+
+    assert await asr_worker.run_once() is True
+    assert await diarization_worker.run_once() is True
+    assert await cleaner_worker.run_once() is True
+
+    results = await client.get(
+        f"/voices/{voice['id']}/results", headers=authorization(owner)
+    )
+    transcript = await client.get(
+        f"/results/{results.json()[0]['id']}/transcript", headers=authorization(owner)
+    )
+    assert transcript.status_code == 200
+    assert transcript.json()["schema_version"] == "speaker-transcript/v1"
+    assert transcript.json()["processing_status"] == "failed"
+    assert transcript.json()["processing_error"] == {
+        "stage": "cleaning",
+        "code": "cleaner_invalid_response",
+        "message": "cleaner rejected output",
+        "attempt_number": 1,
+    }
+    async with session_factory() as session:
+        stored_voice = await session.get(VoiceFile, uuid.UUID(voice["id"]))
+        assert stored_voice.status == VoiceStatus.ERROR
+
+
+class RetryingCleanerProvider(SuccessfulCleanerProvider):
+    def __init__(self):
+        self.calls = 0
+
+    async def clean(self, segments, **kwargs):
+        self.calls += 1
+        if self.calls < 3:
+            raise CleanerError("temporary", code="cleaner_timeout", retryable=True)
+        return await super().clean(segments, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_cleaner_retries_three_times_and_persists_only_final_artifact(
+    client, session_factory
+):
+    await _meeting_with_voice(client, "cleaner-retry@example.com")
+    asr_worker = ASRWorker(
+        session_factory=session_factory,
+        storage=client.storage,
+        settings=get_settings(),
+        provider_factory=lambda _: SuccessfulProvider(),
+    )
+    diarization_worker = DiarizationWorker(
+        session_factory=session_factory,
+        storage=client.storage,
+        settings=get_settings(),
+        provider_factory=lambda _: SuccessfulDiarizationProvider(),
+    )
+    provider = RetryingCleanerProvider()
+    cleaner_worker = CleanerWorker(
+        session_factory=session_factory,
+        storage=client.storage,
+        settings=get_settings(),
+        provider_factory=lambda _: provider,
+    )
+
+    assert await asr_worker.run_once() is True
+    assert await diarization_worker.run_once() is True
+    assert await cleaner_worker.run_once() is True
+    assert await cleaner_worker.run_once() is True
+    assert await cleaner_worker.run_once() is True
+
+    async with session_factory() as session:
+        cleaning_job = await session.scalar(
+            select(ProcessingJob)
+            .where(ProcessingJob.stage == ProcessingStage.CLEANING)
+            .options(selectinload(ProcessingJob.attempts))
+        )
+        assert [attempt.status for attempt in cleaning_job.attempts] == [
+            ProcessingAttemptStatus.FAILED,
+            ProcessingAttemptStatus.FAILED,
+            ProcessingAttemptStatus.SUCCEEDED,
+        ]
+        cleaned_count = await session.scalar(
+            select(func.count(ResultArtifact.id)).where(
+                ResultArtifact.artifact_type == ResultArtifactType.CLEANED_TEXT
+            )
+        )
+        assert cleaned_count == 1
 
 
 class FlakyProvider:

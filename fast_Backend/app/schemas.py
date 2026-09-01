@@ -204,6 +204,7 @@ class TranscriptResponse(BaseModel):
     source_id: str | None = None
     model: str | None = None
     diarization_model: str | None = None
+    cleaner_model: str | None = None
     words: list[dict] = Field(default_factory=list)
     segments: list[dict]
     metrics: dict

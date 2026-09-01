@@ -38,7 +38,7 @@ class Settings(BaseSettings):
 
     huggingface_token: SecretStr | None = None
     diarization_model_name: str = Field(
-        default="pyannote/speaker-diarization-3.1",
+        default="pyannote/speaker-diarization-community-1",
         validation_alias=AliasChoices("DIARIZATION_MODEL_NAME", "DIARIZATION_MODEL"),
     )
     diarization_model_version: str = "3.1"

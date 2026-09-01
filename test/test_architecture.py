@@ -71,9 +71,10 @@ def test_pyannote_is_an_isolated_local_cpu_service():
     assert "TORCH_HOME: /var/cache/huggingface/torch" in compose
     assert "PYANNOTE_CACHE: /var/cache/huggingface/pyannote" in compose
     assert "COPY src/diarization ./diarization" in dockerfile
-    assert "pyannote-audio==3.3.2" in requirements
-    assert "torch-2.5.1%2Bcpu" in requirements
-    assert "torchaudio-2.5.1%2Bcpu" in requirements
+    assert "pyannote-audio==4.0.7" in requirements
+    assert "torch-2.8.0%2Bcpu" in requirements
+    assert "torchaudio-2.8.0%2Bcpu" in requirements
+    assert "torchcodec-0.7.0" in requirements
     assert "nvidia-" not in requirements
 
 

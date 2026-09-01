@@ -375,18 +375,24 @@ class DiarizationWorker:
         return True
 
 
-async def run_forever() -> None:
+async def run_forever(
+    *,
+    provider_factory: ProviderFactory | None = None,
+    configure_worker_logging: bool = True,
+) -> None:
     settings = get_settings()
-    configure_logging(
-        service="diarization-worker",
-        environment=settings.app_env,
-        level=settings.log_level,
-        json_output=settings.json_logs_enabled,
-    )
+    if configure_worker_logging:
+        configure_logging(
+            service="diarization-worker",
+            environment=settings.app_env,
+            level=settings.log_level,
+            json_output=settings.json_logs_enabled,
+        )
     worker = DiarizationWorker(
         session_factory=SessionFactory,
         storage=get_object_storage(),
         settings=settings,
+        provider_factory=provider_factory,
     )
     logger.info(
         "diarization_worker_started",

@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from diarization.alignment import align_transcript_to_speakers
+from diarization.bootstrap import preload_model
 from diarization.provider import (
     DiarizationError,
     DiarizationTurn,
@@ -147,3 +148,38 @@ def test_local_provider_rejects_missing_huggingface_token_before_model_loading()
 
     assert raised.value.code == "diarization_configuration_error"
     assert raised.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_diarization_bootstrap_preloads_model_before_worker_start():
+    class Provider:
+        model_name = "pyannote/speaker-diarization-3.1"
+        device = "cpu"
+
+        def __init__(self):
+            self.loaded = False
+
+        async def preload(self):
+            self.loaded = True
+
+    provider = Provider()
+    await preload_model(provider)
+
+    assert provider.loaded is True
+
+
+@pytest.mark.asyncio
+async def test_diarization_bootstrap_propagates_download_failure():
+    class Provider:
+        model_name = "pyannote/speaker-diarization-3.1"
+        device = "cpu"
+
+        async def preload(self):
+            raise DiarizationError(
+                "download timed out",
+                code="diarization_model_load_failed",
+                retryable=False,
+            )
+
+    with pytest.raises(DiarizationError, match="download timed out"):
+        await preload_model(Provider())

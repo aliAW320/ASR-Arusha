@@ -108,5 +108,9 @@ class PyannoteLocalProvider:
                 retryable=True,
             ) from error
 
+    async def preload(self) -> None:
+        """Download and initialize the pipeline before the worker accepts jobs."""
+        await asyncio.to_thread(self._load_pipeline)
+
     async def diarize(self, audio_path: Path) -> list[DiarizationTurn]:
         return await asyncio.to_thread(self._diarize_sync, audio_path)

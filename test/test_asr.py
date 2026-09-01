@@ -83,7 +83,8 @@ async def test_openai_compatible_provider_sends_multipart_contract_and_parses_re
     assert request.headers["authorization"] == "Bearer secret-key"
     assert b'form-data; name="model"' in body and b"persian-model" in body
     assert b'form-data; name="timestamp_granularities[]"' in body
-    assert b"word" in body and b"segment" in body
+    assert b'form-data; name="timestamp_granularities[]"\r\n\r\nword\r\n' in body
+    assert body.count(b'form-data; name="timestamp_granularities[]"') == 1
     assert b'filename="sample.wav"' in body
     assert response.text == "متن پاسخ"
     assert response.external_request_id == "remote-request"

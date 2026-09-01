@@ -21,4 +21,4 @@ RUN uv pip install \
 COPY fast_Backend/app ./app
 COPY src/diarization ./diarization
 
-CMD [".venv/bin/python", "-m", "diarization.worker"]
+CMD [".venv/bin/python", "-m", "diarization.bootstrap"]

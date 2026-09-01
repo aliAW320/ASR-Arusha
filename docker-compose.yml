@@ -54,8 +54,14 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       DIARIZATION_DEVICE: cpu
       HF_HOME: /var/cache/huggingface
+      TORCH_HOME: /var/cache/huggingface/torch
+      PYANNOTE_CACHE: /var/cache/huggingface/pyannote
+      HF_HUB_DOWNLOAD_TIMEOUT: ${HF_HUB_DOWNLOAD_TIMEOUT:-600}
+      HF_HUB_ETAG_TIMEOUT: ${HF_HUB_ETAG_TIMEOUT:-60}
+      HF_HUB_VERBOSITY: info
+      HF_HUB_DISABLE_PROGRESS_BARS: "0"
     volumes:
-      - huggingface_cache:/var/cache/huggingface
+      - ./data/huggingface-cache:/var/cache/huggingface
     depends_on:
       api:
         condition: service_started
@@ -98,4 +104,3 @@ services:
 volumes:
   postgres_data:
   minio_data:
-  huggingface_cache:

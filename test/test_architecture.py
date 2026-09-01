@@ -66,7 +66,10 @@ def test_pyannote_is_an_isolated_local_cpu_service():
 
     assert "dockerfile: Docker/diarization.Dockerfile" in compose
     assert "DIARIZATION_DEVICE: cpu" in compose
-    assert 'python", "-m", "diarization.worker"' in dockerfile
+    assert 'python", "-m", "diarization.bootstrap"' in dockerfile
+    assert "HF_HUB_DOWNLOAD_TIMEOUT" in compose
+    assert "TORCH_HOME: /var/cache/huggingface/torch" in compose
+    assert "PYANNOTE_CACHE: /var/cache/huggingface/pyannote" in compose
     assert "COPY src/diarization ./diarization" in dockerfile
     assert "pyannote-audio==3.3.2" in requirements
     assert "torch-2.5.1%2Bcpu" in requirements

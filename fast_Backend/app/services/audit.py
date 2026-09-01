@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import History, Meeting, User, VoiceFile
+from ..models import History, Meeting, MeetingResult, MeetingResultArtifact, User, VoiceFile
 from ..observability.context import get_log_context
 
 
@@ -19,6 +19,8 @@ def add_history_event(
     affected_users: Iterable[User] = (),
     affected_meetings: Iterable[Meeting] = (),
     affected_voices: Iterable[VoiceFile] = (),
+    affected_meeting_results: Iterable[MeetingResult] = (),
+    affected_meeting_result_artifacts: Iterable[MeetingResultArtifact] = (),
 ) -> History:
     context = get_log_context()
     request_id = context.get("request_id")
@@ -38,6 +40,8 @@ def add_history_event(
         affected_users=list(affected_users),
         affected_meetings=list(affected_meetings),
         affected_voices=list(affected_voices),
+        affected_meeting_results=list(affected_meeting_results),
+        affected_meeting_result_artifacts=list(affected_meeting_result_artifacts),
     )
     session.add(event)
     return event

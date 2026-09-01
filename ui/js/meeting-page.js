@@ -4,6 +4,7 @@ import { $, escapeHtml, faNumber, formatDate, renderSidebar, requireUser, toast 
 const meetingId = new URLSearchParams(location.search).get("id");
 let meeting;
 if (!meetingId) location.replace("/meetings.html");
+else $("#meeting-transcript-link").href = `/meeting-transcript.html?id=${encodeURIComponent(meetingId)}`;
 
 function roleLabel(role) { return ({ owner: "مالک", contributor: "همکار", viewer: "مشاهده‌گر" })[role] || role; }
 function renderVoices(voices, transcripts) {

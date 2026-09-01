@@ -37,6 +37,15 @@ def test_backend_openapi_exposes_required_phase_endpoints():
     assert "/history" in paths
 
 
+def test_backend_openapi_exposes_meeting_composer_endpoints():
+    paths = app.openapi()["paths"]
+    assert "post" in paths["/meetings/{meeting_id}/compose"]
+    assert "get" in paths["/meetings/{meeting_id}/results"]
+    assert "get" in paths["/meeting-results/{meeting_result_id}"]
+    assert "get" in paths["/meeting-results/{meeting_result_id}/transcript"]
+    assert "get" in paths["/meetings/{meeting_id}/transcript"]
+
+
 def test_compose_keeps_root_exception_and_uses_docker_api_file():
     compose = (PROJECT_ROOT / "docker-compose.yml").read_text()
     assert (PROJECT_ROOT / "Docker" / "api.Dockerfile").is_file()
@@ -88,3 +97,36 @@ def test_cleaner_is_an_isolated_remote_api_worker():
     assert "COPY src/cleaner ./cleaner" in dockerfile
     assert "dockerfile: Docker/cleaner.Dockerfile" in workflow
     assert "torch" not in dockerfile
+
+
+def test_meeting_composer_is_an_isolated_cpu_only_worker():
+    compose = (PROJECT_ROOT / "docker-compose.yml").read_text()
+    dockerfile = (PROJECT_ROOT / "Docker" / "meeting-composer.Dockerfile").read_text()
+    workflow = (PROJECT_ROOT / ".github" / "workflows" / "ci-cd.yml").read_text()
+
+    assert "dockerfile: Docker/meeting-composer.Dockerfile" in compose
+    assert 'python", "-m", "meeting_composer.worker"' in dockerfile
+    assert "COPY src/meeting_composer ./meeting_composer" in dockerfile
+    assert "dockerfile: Docker/meeting-composer.Dockerfile" in workflow
+    assert "torch" not in dockerfile
+    assert "pyannote" not in dockerfile.lower()
+
+
+def test_every_image_that_imports_app_services_processing_ships_meeting_composer():
+    # app/services/processing.py imports meeting_composer.composer at module
+    # level (shared fingerprint/offset algorithm), so importing *anything*
+    # from that module -- even just queue_result_diarization or
+    # queue_result_cleaning -- transitively requires the meeting_composer
+    # package to be on the image. Each of these Dockerfiles copies its own
+    # file list independently, so each must be checked independently: a
+    # missing COPY here is a container that builds fine and then
+    # ModuleNotFoundError-crash-loops at runtime (caught live in this repo
+    # while wiring the feature in).
+    for dockerfile_name in (
+        "api.Dockerfile",
+        "cleaner.Dockerfile",
+        "asr.Dockerfile",
+        "diarization.Dockerfile",
+    ):
+        dockerfile = (PROJECT_ROOT / "Docker" / dockerfile_name).read_text()
+        assert "COPY src/meeting_composer ./meeting_composer" in dockerfile, dockerfile_name

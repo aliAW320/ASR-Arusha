@@ -106,9 +106,16 @@ async def get_processing_job(
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ):
     job = await load_processing_job(session, job_id)
-    if job is None or job.result is None:
+    if job is None:
         raise HTTPException(status_code=404, detail="Processing job not found")
-    await _require_voice_access(session, current_user, job.result.voice)
+    if job.result is not None:
+        await _require_voice_access(session, current_user, job.result.voice)
+    elif job.meeting_result is not None:
+        await require_meeting_permission(
+            session, current_user, job.meeting_result.meeting_id, MeetingPermission.VIEW
+        )
+    else:
+        raise HTTPException(status_code=404, detail="Processing job not found")
     return processing_job_response(job)
 
 

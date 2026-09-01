@@ -20,5 +20,6 @@ RUN uv pip install \
 
 COPY fast_Backend/app ./app
 COPY src/diarization ./diarization
+COPY src/meeting_composer ./meeting_composer
 
 CMD [".venv/bin/python", "-m", "diarization.bootstrap"]

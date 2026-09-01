@@ -127,3 +127,98 @@ def test_enum_check_constraints_are_limited_to_known_reflection_exceptions():
     assert '"user_role"' in environment_source
     assert '"meeting_member_role"' in environment_source
     assert '"voice_status"' in environment_source
+
+
+def test_meeting_composer_migration_adds_source_lineage_and_fingerprint(tmp_path):
+    database_path = tmp_path / "composer.db"
+    environment = os.environ.copy()
+    environment["DATABASE_URL"] = f"sqlite+aiosqlite:///{database_path}"
+    environment["JWT_SECRET_KEY"] = "test-secret-key-that-is-at-least-32-characters"
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=os.getcwd(),
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+    engine = create_engine(f"sqlite:///{database_path}")
+    inspector = inspect(engine)
+
+    meeting_result_columns = {
+        column["name"] for column in inspector.get_columns("meeting_results")
+    }
+    assert {"source_fingerprint", "schema_version"} <= meeting_result_columns
+
+    source_columns = {
+        column["name"] for column in inspector.get_columns("meeting_result_sources")
+    }
+    assert {
+        "meeting_result_id",
+        "result_id",
+        "position",
+        "voice_sequence_snapshot",
+        "source_offset_ms",
+        "source_duration_ms",
+        "source_artifact_id",
+    } <= source_columns
+
+    unique_constraints = {
+        tuple(sorted(constraint["column_names"]))
+        for constraint in inspector.get_unique_constraints("meeting_results")
+    }
+    assert tuple(sorted(("meeting_id", "source_fingerprint"))) in unique_constraints
+
+    source_unique_constraints = {
+        tuple(sorted(constraint["column_names"]))
+        for constraint in inspector.get_unique_constraints("meeting_result_sources")
+    }
+    assert (
+        tuple(sorted(("meeting_result_id", "position")))
+        in source_unique_constraints
+    )
+
+    with engine.connect() as connection:
+        foreign_keys = inspector.get_foreign_keys("meeting_result_sources")
+    artifact_fk = next(
+        fk for fk in foreign_keys if fk["constrained_columns"] == ["source_artifact_id"]
+    )
+    assert artifact_fk["referred_table"] == "result_artifacts"
+
+
+def test_meeting_composer_migration_downgrade_restores_plain_association_table(tmp_path):
+    database_path = tmp_path / "composer-downgrade.db"
+    environment = os.environ.copy()
+    environment["DATABASE_URL"] = f"sqlite+aiosqlite:///{database_path}"
+    environment["JWT_SECRET_KEY"] = "test-secret-key-that-is-at-least-32-characters"
+    subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=os.getcwd(),
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "downgrade", "-1"],
+        cwd=os.getcwd(),
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+    engine = create_engine(f"sqlite:///{database_path}")
+    inspector = inspect(engine)
+    source_columns = {
+        column["name"] for column in inspector.get_columns("meeting_result_sources")
+    }
+    assert source_columns == {"meeting_result_id", "result_id"}
+    meeting_result_columns = {
+        column["name"] for column in inspector.get_columns("meeting_results")
+    }
+    assert "source_fingerprint" not in meeting_result_columns
+    assert "schema_version" not in meeting_result_columns

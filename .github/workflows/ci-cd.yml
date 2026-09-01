@@ -94,6 +94,11 @@ jobs:
             local_image: asr-arusha-cleaner:ci
             registry_image: asr-arusha-cleaner
             run_compose_integration: false
+          - name: meeting-composer
+            dockerfile: Docker/meeting-composer.Dockerfile
+            local_image: asr-arusha-meeting-composer:ci
+            registry_image: asr-arusha-meeting-composer
+            run_compose_integration: false
 
     steps:
       - name: Checkout repository

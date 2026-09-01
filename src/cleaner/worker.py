@@ -29,6 +29,7 @@ from app.models import (
 )
 from app.observability.logging import configure_logging, get_logger
 from app.services.audit import add_history_event
+from app.services.processing import queue_meeting_composition_if_ready
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
 
@@ -244,6 +245,45 @@ class CleanerWorker:
                     object_key=key,
                 )
             raise
+
+        # Deliberately a separate transaction from the cleaning success above:
+        # this must never roll back (or otherwise jeopardize) the cleaning
+        # result that just committed successfully. Composition readiness is
+        # re-checked from durable state, so running it after commit loses
+        # nothing.
+        try:
+            async with self.session_factory() as session:
+                voice = await session.get(VoiceFile, item.voice_id)
+                if voice is None:
+                    return
+                composition_job = await queue_meeting_composition_if_ready(
+                    session, voice, self.settings, self.storage
+                )
+                if composition_job is not None:
+                    meeting = (
+                        await session.get(Meeting, voice.meeting_id)
+                        if voice.meeting_id
+                        else None
+                    )
+                    add_history_event(
+                        session,
+                        event_type="meeting_composition.queued",
+                        description="Meeting composition queued",
+                        event_data={
+                            "job_id": str(composition_job.id),
+                            "meeting_result_id": str(composition_job.meeting_result_id),
+                            "stage": ProcessingStage.MEETING_COMPOSE.value,
+                        },
+                        affected_meetings=[meeting] if meeting else [],
+                    )
+                    await session.commit()
+        except Exception as error:
+            logger.exception(
+                "meeting_composition_trigger_failed",
+                "Automatic meeting composition trigger failed after cleaning succeeded",
+                error=error,
+                voice_id=str(item.voice_id),
+            )
 
     async def _finish_failure(
         self,

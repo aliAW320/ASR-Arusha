@@ -163,9 +163,11 @@ class ProcessingAttemptResponse(BaseModel):
 
 class ProcessingJobResponse(BaseModel):
     id: uuid.UUID
-    result_id: uuid.UUID
-    voice_id: uuid.UUID
+    target_type: str
+    result_id: uuid.UUID | None
+    voice_id: uuid.UUID | None
     meeting_id: uuid.UUID | None
+    meeting_result_id: uuid.UUID | None
     stage: str
     status: str
     model_name: str | None
@@ -210,3 +212,67 @@ class TranscriptResponse(BaseModel):
     metrics: dict
     processing_status: str
     processing_error: dict | None = None
+
+
+class ComposeMeetingRequest(BaseModel):
+    result_ids: list[uuid.UUID] | None = None
+    allow_aligned_fallback: bool = False
+    force_new_version: bool = False
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class MeetingResultSourceResponse(BaseModel):
+    position: int
+    voice_id: uuid.UUID
+    result_id: uuid.UUID
+    source_artifact_id: uuid.UUID
+    voice_sequence_snapshot: int | None
+    source_offset_ms: int
+    source_duration_ms: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MeetingResultArtifactResponse(BaseModel):
+    id: uuid.UUID
+    artifact_type: str
+    minio_bucket: str
+    minio_key: str
+    content_type: str | None
+    checksum_sha256: str | None
+    producer_job_id: uuid.UUID | None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MeetingResultResponse(BaseModel):
+    id: uuid.UUID
+    meeting_id: uuid.UUID
+    schema_version: str
+    source_fingerprint: str
+    generated_at: datetime
+    completed_at: datetime | None
+    sources: list[MeetingResultSourceResponse]
+    artifacts: list[MeetingResultArtifactResponse]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MeetingTranscriptResponse(BaseModel):
+    schema_version: str = Field(alias="schema")
+    meeting_id: str
+    meeting_result_id: str
+    generated_at: str
+    duration_ms: int
+    source_count: int
+    speaker_count: int
+    text: str
+    sources: list[dict]
+    speakers: list[dict]
+    segments: list[dict]
+    processing_status: str
+    processing_error: dict | None = None
+
+    model_config = ConfigDict(populate_by_name=True)

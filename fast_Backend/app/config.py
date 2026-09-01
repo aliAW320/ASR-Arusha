@@ -57,6 +57,16 @@ class Settings(BaseSettings):
     cleaner_overlap_min_segments: int = Field(default=1, ge=0, le=20)
     cleaner_overlap_max_segments: int = Field(default=5, ge=0, le=20)
 
+    meeting_composer_max_attempts: int = Field(default=3, ge=1, le=10)
+    meeting_composer_poll_interval_seconds: float = Field(default=2.0, gt=0)
+    meeting_composer_worker_name: str = "meeting-composer"
+    meeting_composer_source_policy: Literal["cleaned_required", "cleaned_or_aligned"] = (
+        "cleaned_required"
+    )
+    meeting_composer_gap_ms: int = Field(default=0, ge=0)
+    meeting_composer_max_input_bytes: int = Field(default=104_857_600, ge=1)
+    meeting_composer_max_segments: int = Field(default=500_000, ge=1)
+
     @property
     def json_logs_enabled(self) -> bool:
         if self.log_format == "json":

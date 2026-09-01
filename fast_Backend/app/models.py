@@ -272,24 +272,6 @@ history_affected_meeting_speakers = Table(
 )
 
 
-meeting_result_sources = Table(
-    "meeting_result_sources",
-    Base.metadata,
-    Column(
-        "meeting_result_id",
-        Uuid,
-        ForeignKey("meeting_results.id", ondelete="CASCADE"),
-        primary_key=True,
-    ),
-    Column(
-        "result_id",
-        Uuid,
-        ForeignKey("results.id", ondelete="CASCADE"),
-        primary_key=True,
-    ),
-)
-
-
 processing_job_dependencies = Table(
     "processing_job_dependencies",
     Base.metadata,
@@ -831,8 +813,13 @@ class Result(Base):
         passive_deletes=True,
     )
 
+    meeting_result_sources: Mapped[list[MeetingResultSource]] = relationship(
+        back_populates="result",
+        passive_deletes=True,
+    )
+
     meeting_results: Mapped[list[MeetingResult]] = relationship(
-        secondary=meeting_result_sources,
+        secondary="meeting_result_sources",
         back_populates="source_results",
         viewonly=True,
     )
@@ -908,10 +895,20 @@ class MeetingResult(Base):
     This is separate from Result because Result belongs to a single VoiceFile,
     while combined transcript/minutes/key-points belong to the Meeting.
 
-    source_results records exactly which per-voice Result versions were used.
+    sources records exactly which per-voice Result versions were used, in what
+    order, and at what offset/duration -- the ordered snapshot the Meeting
+    Composer reproduces its output from. source_fingerprint deduplicates
+    concurrent/duplicate composition requests over the same source set.
     """
 
     __tablename__ = "meeting_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "meeting_id",
+            "source_fingerprint",
+            name="uq_meeting_result_meeting_fingerprint",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     meeting_id: Mapped[uuid.UUID] = mapped_column(
@@ -919,6 +916,13 @@ class MeetingResult(Base):
         nullable=False,
         index=True,
     )
+    schema_version: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="meeting-transcript/v1",
+        server_default="meeting-transcript/v1",
+    )
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     generated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -931,9 +935,20 @@ class MeetingResult(Base):
 
     meeting: Mapped[Meeting] = relationship(back_populates="meeting_results")
 
+    sources: Mapped[list[MeetingResultSource]] = relationship(
+        back_populates="meeting_result",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="MeetingResultSource.position",
+    )
+
+    # Read-only convenience view over `sources` for callers that only need the
+    # ordered Result rows without the position/offset/lineage metadata.
     source_results: Mapped[list[Result]] = relationship(
-        secondary=meeting_result_sources,
+        secondary="meeting_result_sources",
         back_populates="meeting_results",
+        viewonly=True,
+        order_by="MeetingResultSource.position",
     )
 
     artifacts: Mapped[list[MeetingResultArtifact]] = relationship(
@@ -951,6 +966,78 @@ class MeetingResult(Base):
         secondary=history_affected_meeting_results,
         back_populates="affected_meeting_results",
     )
+
+
+class MeetingResultSource(Base):
+    """
+    Ordered snapshot of one voice-level Result used to compose a MeetingResult.
+
+    This is the association *object* (not a plain link table) because the
+    Meeting Composer needs to reproduce its output deterministically: it must
+    remember the exact position, the voice sequence number at snapshot time,
+    the offset/duration used to place this source on the meeting timeline, and
+    exactly which ResultArtifact was read -- independent of anything that
+    happens to the Result or its artifacts afterwards.
+    """
+
+    __tablename__ = "meeting_result_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "meeting_result_id",
+            "position",
+            name="uq_meeting_result_source_position",
+        ),
+        CheckConstraint(
+            "position >= 0",
+            name="ck_meeting_result_source_position_non_negative",
+        ),
+        CheckConstraint(
+            "voice_sequence_snapshot IS NULL OR voice_sequence_snapshot >= 0",
+            name="ck_meeting_result_source_voice_sequence_non_negative",
+        ),
+        CheckConstraint(
+            "source_offset_ms >= 0",
+            name="ck_meeting_result_source_offset_non_negative",
+        ),
+        CheckConstraint(
+            "source_duration_ms > 0",
+            name="ck_meeting_result_source_duration_positive",
+        ),
+    )
+
+    meeting_result_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("meeting_results.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    result_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("results.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Nullable only for legacy single-voice rows that predate sequence_number
+    # backfill; every other row snapshots the VoiceFile.sequence_number that
+    # was in effect when this MeetingResult was created.
+    voice_sequence_snapshot: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    source_offset_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_duration_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    source_artifact_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("result_artifacts.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    meeting_result: Mapped[MeetingResult] = relationship(back_populates="sources")
+    result: Mapped[Result] = relationship(back_populates="meeting_result_sources")
+    source_artifact: Mapped[ResultArtifact] = relationship()
+
+    @property
+    def voice_id(self) -> uuid.UUID:
+        return self.result.voice_id
 
 
 class MeetingResultArtifact(Base):

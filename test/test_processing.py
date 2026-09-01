@@ -296,6 +296,7 @@ async def test_diarization_worker_finishes_pipeline_and_exposes_speaker_transcri
             ProcessingStage.TRANSCRIPTION,
             ProcessingStage.DIARIZATION,
             ProcessingStage.CLEANING,
+            ProcessingStage.MEETING_COMPOSE,
         }
         assert labels == {"SPEAKER_00", "SPEAKER_01"}
 

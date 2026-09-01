@@ -91,3 +91,41 @@ def test_ci_builds_and_publishes_the_ui_image():
     assert "local_image: asr-arusha-ui:ci" in workflow
     assert "registry_image: asr-arusha-ui" in workflow
     assert "up -d --no-build postgres minio api" in workflow
+
+
+def test_meeting_transcript_page_exists_and_wires_its_own_module():
+    page = (ROOT / "ui" / "meeting-transcript.html").read_text()
+    assert 'dir="rtl"' in page
+    assert '/js/meeting-transcript-page.js' in page
+    assert (ROOT / "ui" / "js" / "meeting-transcript-page.js").is_file()
+    assert 'id="meeting-transcript-content"' in page
+    assert 'id="meeting-processing-error"' in page
+    assert 'id="meeting-processing-error-message"' in page
+    assert 'id="version-select"' in page
+    assert 'id="recompose-button"' in page
+    assert 'id="meeting-sources"' in page
+    assert "https://" not in page
+
+
+def test_meeting_page_links_to_the_combined_meeting_transcript():
+    meeting_page = (ROOT / "ui" / "meeting.html").read_text()
+    meeting_js = (ROOT / "ui" / "js" / "meeting-page.js").read_text()
+    assert "meeting-transcript.html" in meeting_page or "meeting-transcript.html" in meeting_js
+
+
+def test_meeting_transcript_page_calls_the_meeting_composer_endpoints():
+    javascript = (ROOT / "ui" / "js" / "meeting-transcript-page.js").read_text()
+    for endpoint_fragment in (
+        "/results",
+        "/meeting-results/",
+        "/compose",
+    ):
+        assert endpoint_fragment in javascript
+    assert "escapeHtml" in javascript
+    assert "force_new_version" in javascript
+
+
+def test_meeting_transcript_page_renders_non_color_status_and_error_detail():
+    javascript = (ROOT / "ui" / "js" / "meeting-transcript-page.js").read_text()
+    assert "processing_error" in javascript
+    assert "processing_status" in javascript

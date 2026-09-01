@@ -18,7 +18,7 @@ def test_normalize_persian_applies_the_approved_canonicalization_rules():
     assert normalize_persian("ۀ ئ ى ة") == "ه ی ی ه"
 
 
-def test_canonical_transcript_preserves_segments_words_and_metrics():
+def test_canonical_transcript_preserves_segment_timeline_and_metrics_without_words():
     payload = canonical_transcript(
         TranscriptionResponse(
             text="سلام دنیا",
@@ -43,7 +43,8 @@ def test_canonical_transcript_preserves_segments_words_and_metrics():
     assert payload["schema_version"] == "canonical-transcript/v1"
     assert payload["segments"][0]["start_ms"] == 500
     assert payload["segments"][0]["end_ms"] == 1750
-    assert payload["segments"][0]["words"][0]["end_ms"] == 900
+    assert payload["segments"][0]["words"] == []
+    assert payload["words"] == []
     assert payload["metrics"]["real_time_factor"] == 0.5
 
 
@@ -68,6 +69,7 @@ async def test_openai_compatible_provider_sends_multipart_contract_and_parses_re
         provider = OpenAICompatibleTranscriptionProvider(
             base_url="https://asr.example/v1/",
             api_key="secret-key",
+            num_beams=7,
             client=client,
         )
         response = await provider.transcribe(
@@ -82,15 +84,14 @@ async def test_openai_compatible_provider_sends_multipart_contract_and_parses_re
     assert str(request.url) == "https://asr.example/v1/audio/transcriptions"
     assert request.headers["authorization"] == "Bearer secret-key"
     assert b'form-data; name="model"' in body and b"persian-model" in body
-    assert b'form-data; name="timestamp_granularities[]"' in body
-    assert b'form-data; name="timestamp_granularities[]"\r\n\r\nword\r\n' in body
-    assert body.count(b'form-data; name="timestamp_granularities[]"') == 1
+    assert b'timestamp_granularities' not in body
+    assert b'form-data; name="extra_body[num_beams]"\r\n\r\n7\r\n' in body
     assert b'filename="sample.wav"' in body
     assert response.text == "متن پاسخ"
     assert response.external_request_id == "remote-request"
 
 
-def test_canonical_transcript_accepts_provider_level_word_timestamps():
+def test_canonical_transcript_ignores_unsolicited_provider_word_timestamps():
     payload = canonical_transcript(
         TranscriptionResponse(
             text="سلام",
@@ -107,7 +108,7 @@ def test_canonical_transcript_accepts_provider_level_word_timestamps():
         audio_duration_seconds=1,
     )
 
-    assert payload["words"] == [{"text": "سلام", "start_ms": 100, "end_ms": 800}]
+    assert payload["words"] == []
 
 
 @pytest.mark.asyncio

@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     transcript_api_key: SecretStr | None = None
     transcript_model_name: str = "whisper-large-v3-persian"
     asr_request_timeout_seconds: int = Field(default=600, ge=30)
+    asr_num_beams: int = Field(default=5, ge=1, le=20)
     asr_max_attempts: int = Field(default=3, ge=1, le=10)
     asr_poll_interval_seconds: float = Field(default=2.0, gt=0)
     asr_worker_name: str = "asr-worker"

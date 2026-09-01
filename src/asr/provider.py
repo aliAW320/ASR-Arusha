@@ -27,10 +27,12 @@ class OpenAICompatibleTranscriptionProvider:
         base_url: str,
         api_key: str,
         timeout_seconds: int = 600,
+        num_beams: int = 5,
         client: httpx.AsyncClient | None = None,
     ):
         self.endpoint = f"{base_url.rstrip('/')}/audio/transcriptions"
         self.api_key = api_key
+        self.num_beams = num_beams
         self._owns_client = client is None
         self.client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(
@@ -59,9 +61,8 @@ class OpenAICompatibleTranscriptionProvider:
                     "model": model,
                     "language": "fa",
                     "response_format": "verbose_json",
-                    "timestamp_granularities[]": "word",
                     "extra_body[use_beam_search]": "true",
-                    "extra_body[num_beams]": "5",
+                    "extra_body[num_beams]": str(self.num_beams),
                 },
                 files={"file": (filename, audio, content_type)},
             )

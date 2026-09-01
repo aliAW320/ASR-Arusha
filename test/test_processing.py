@@ -195,7 +195,6 @@ async def test_worker_completes_job_and_persists_canonical_and_raw_artifacts(
     assert {item["artifact_type"] for item in results.json()[0]["artifacts"]} == {
         "transcript_json",
         "raw_text",
-        "word_timestamps_json",
     }
     transcript_artifact = next(
         item for item in results.json()[0]["artifacts"] if item["artifact_type"] == "transcript_json"
@@ -254,12 +253,13 @@ async def test_diarization_worker_finishes_pipeline_and_exposes_speaker_transcri
     assert transcript.json()["processing_status"] == "succeeded"
     assert [segment["speaker_id"] for segment in transcript.json()["segments"]] == [
         "SPEAKER_00",
-        "SPEAKER_01",
+    ]
+    assert transcript.json()["segments"][0]["speaker_ids"] == [
+        "SPEAKER_00",
     ]
     assert {item["artifact_type"] for item in result["artifacts"]} == {
         "transcript_json",
         "raw_text",
-        "word_timestamps_json",
         "diarization_json",
         "aligned_transcript_json",
     }
@@ -272,7 +272,7 @@ async def test_diarization_worker_finishes_pipeline_and_exposes_speaker_transcri
         assert labels == {"SPEAKER_00", "SPEAKER_01"}
 
 
-class NoTimestampProvider:
+class SegmentOnlyProvider:
     async def transcribe(self, *_args, **_kwargs):
         return TranscriptionResponse(
             text="متن بدون زمان",
@@ -283,7 +283,7 @@ class NoTimestampProvider:
 
 
 @pytest.mark.asyncio
-async def test_missing_word_timestamps_stops_pipeline_and_exposes_exact_ui_error(
+async def test_segment_timestamps_complete_pipeline_without_word_timestamps(
     client, session_factory
 ):
     owner, meeting, voice = await _meeting_with_voice(client, "timestamp-error@example.com")
@@ -291,7 +291,7 @@ async def test_missing_word_timestamps_stops_pipeline_and_exposes_exact_ui_error
         session_factory=session_factory,
         storage=client.storage,
         settings=get_settings(),
-        provider_factory=lambda _: NoTimestampProvider(),
+        provider_factory=lambda _: SegmentOnlyProvider(),
     )
     diarization_worker = DiarizationWorker(
         session_factory=session_factory,
@@ -311,13 +311,15 @@ async def test_missing_word_timestamps_stops_pipeline_and_exposes_exact_ui_error
         f"/results/{results.json()[0]['id']}/transcript", headers=authorization(owner)
     )
     assert transcript.status_code == 200
-    assert transcript.json()["schema_version"] == "canonical-transcript/v1"
-    assert transcript.json()["processing_status"] == "failed"
-    assert transcript.json()["processing_error"]["code"] == "missing_word_timestamps"
-    assert "word timestamps" in transcript.json()["processing_error"]["message"]
+    assert transcript.json()["schema_version"] == "speaker-transcript/v1"
+    assert transcript.json()["processing_status"] == "succeeded"
+    assert transcript.json()["processing_error"] is None
+    assert transcript.json()["segments"][0]["speaker_ids"] == [
+        "SPEAKER_00",
+    ]
     async with session_factory() as session:
         stored_voice = await session.get(VoiceFile, uuid.UUID(voice["id"]))
-        assert stored_voice.status == VoiceStatus.ERROR
+        assert stored_voice.status == VoiceStatus.FINISHED
 
 
 class FlakyProvider:
@@ -362,7 +364,7 @@ async def test_worker_retries_retryable_failure_three_times_as_append_only_attem
             ProcessingAttemptStatus.FAILED,
             ProcessingAttemptStatus.SUCCEEDED,
         ]
-        assert await session.scalar(select(func.count(ResultArtifact.id))) == 3
+        assert await session.scalar(select(func.count(ResultArtifact.id))) == 2
 
 
 class PermanentFailureProvider:

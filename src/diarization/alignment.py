@@ -3,43 +3,80 @@ from typing import Any
 from .provider import DiarizationError, DiarizationTurn
 
 
-def _validated_words(transcript: dict[str, Any]) -> list[dict[str, Any]]:
-    source_words = transcript.get("words") or []
-    if not source_words:
-        source_words = [
-            word
-            for segment in transcript.get("segments") or []
-            for word in segment.get("words") or []
-        ]
-    if transcript.get("text", "").strip() and not source_words:
+def _validated_segments(transcript: dict[str, Any]) -> list[dict[str, Any]]:
+    source_segments = transcript.get("segments") or []
+    if transcript.get("text", "").strip() and not source_segments:
         raise DiarizationError(
-            "ASR response did not include word timestamps required for speaker alignment",
-            code="missing_word_timestamps",
+            "ASR response did not include timed segments required for speaker alignment",
+            code="missing_segment_timestamps",
             retryable=False,
         )
 
-    words = []
-    for index, word in enumerate(source_words):
-        start_ms = word.get("start_ms")
-        end_ms = word.get("end_ms")
+    segments = []
+    for index, segment in enumerate(source_segments):
+        start_ms = segment.get("start_ms")
+        end_ms = segment.get("end_ms")
         if start_ms is None or end_ms is None or end_ms < start_ms:
             raise DiarizationError(
-                f"ASR word timestamp at index {index} is missing or invalid",
-                code="invalid_word_timestamps",
+                f"ASR segment timestamp at index {index} is missing or invalid",
+                code="invalid_segment_timestamps",
                 retryable=False,
             )
-        words.append(
+        segments.append(
             {
-                "text": str(word.get("text") or ""),
+                "id": str(segment.get("id", index)),
                 "start_ms": int(start_ms),
                 "end_ms": int(end_ms),
+                "text": str(segment.get("text") or ""),
             }
         )
-    return words
+    return segments
 
 
-def _overlap_ms(word: dict[str, Any], turn: DiarizationTurn) -> int:
-    return max(0, min(word["end_ms"], turn.end_ms) - max(word["start_ms"], turn.start_ms))
+def _overlap_ms(segment: dict[str, Any], turn: DiarizationTurn) -> int:
+    return max(
+        0,
+        min(segment["end_ms"], turn.end_ms)
+        - max(segment["start_ms"], turn.start_ms),
+    )
+
+
+def _distance_ms(segment: dict[str, Any], turn: DiarizationTurn) -> int:
+    if turn.end_ms < segment["start_ms"]:
+        return segment["start_ms"] - turn.end_ms
+    if segment["end_ms"] < turn.start_ms:
+        return turn.start_ms - segment["end_ms"]
+    return 0
+
+
+def _matching_speakers(
+    segment: dict[str, Any], turns: list[DiarizationTurn]
+) -> list[str]:
+    overlap_by_speaker: dict[str, int] = {}
+    first_turn_by_speaker: dict[str, int] = {}
+    for turn in turns:
+        overlap = _overlap_ms(segment, turn)
+        if overlap <= 0:
+            continue
+        overlap_by_speaker[turn.speaker_id] = (
+            overlap_by_speaker.get(turn.speaker_id, 0) + overlap
+        )
+        first_turn_by_speaker.setdefault(turn.speaker_id, turn.start_ms)
+    if overlap_by_speaker:
+        selected = min(
+            overlap_by_speaker,
+            key=lambda speaker_id: (
+                -overlap_by_speaker[speaker_id],
+                first_turn_by_speaker[speaker_id],
+                speaker_id,
+            ),
+        )
+        return [selected]
+    nearest = min(
+        turns,
+        key=lambda turn: (_distance_ms(segment, turn), turn.start_ms, turn.end_ms),
+    )
+    return [nearest.speaker_id]
 
 
 def align_transcript_to_speakers(
@@ -48,49 +85,24 @@ def align_transcript_to_speakers(
     *,
     diarization_model: str,
 ) -> dict[str, Any]:
-    """Use Pyannote turns as primary segments and place each ASR word exactly once."""
-    words = _validated_words(transcript)
-    if words and not turns:
+    """Assign each timed ASR segment to every overlapping Pyannote speaker."""
+    source_segments = _validated_segments(transcript)
+    if source_segments and not turns:
         raise DiarizationError(
-            "Pyannote did not detect any speaker turns for timestamped ASR text",
+            "Pyannote did not detect any speaker turns for timed ASR segments",
             code="no_speakers_detected",
             retryable=False,
         )
 
-    assigned: list[list[dict[str, Any]]] = [[] for _ in turns]
-    for index, word in enumerate(words):
-        overlaps = [_overlap_ms(word, turn) for turn in turns]
-        best_overlap = max(overlaps, default=0)
-        if best_overlap <= 0:
-            midpoint = (word["start_ms"] + word["end_ms"]) / 2
-            candidates = [
-                turn_index
-                for turn_index, turn in enumerate(turns)
-                if turn.start_ms <= midpoint <= turn.end_ms
-            ]
-            if not candidates:
-                raise DiarizationError(
-                    f"ASR word timestamp at index {index} does not overlap any speaker turn",
-                    code="unaligned_word_timestamp",
-                    retryable=False,
-                )
-            selected = candidates[0]
-        else:
-            selected = overlaps.index(best_overlap)
-        assigned[selected].append(word)
-
     segments = []
-    for index, (turn, turn_words) in enumerate(zip(turns, assigned, strict=True)):
+    for segment in source_segments:
+        speaker_ids = _matching_speakers(segment, turns)
         segments.append(
             {
-                "id": str(index),
-                "start_ms": turn.start_ms,
-                "end_ms": turn.end_ms,
-                "speaker_id": turn.speaker_id,
-                "text": " ".join(
-                    word["text"].strip() for word in turn_words if word["text"].strip()
-                ),
-                "words": turn_words,
+                **segment,
+                "speaker_id": " + ".join(speaker_ids),
+                "speaker_ids": speaker_ids,
+                "words": [],
             }
         )
 
@@ -101,7 +113,7 @@ def align_transcript_to_speakers(
         "model": transcript.get("model"),
         "diarization_model": diarization_model,
         "text": transcript.get("text", ""),
-        "words": words,
+        "words": [],
         "segments": segments,
         "metrics": transcript.get("metrics") or {},
     }

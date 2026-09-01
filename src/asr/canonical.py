@@ -19,17 +19,7 @@ def canonical_transcript(
 ) -> dict[str, Any]:
     source_segments = response.segments or [{"id": 0, "text": response.text}]
     segments = []
-    canonical_words = []
     for index, segment in enumerate(source_segments):
-        words = []
-        for word in segment.get("words") or []:
-            canonical_word = {
-                "text": str(word.get("word") or word.get("text") or ""),
-                "start_ms": _milliseconds(word.get("start")),
-                "end_ms": _milliseconds(word.get("end")),
-            }
-            words.append(canonical_word)
-            canonical_words.append(canonical_word)
         segments.append(
             {
                 "id": str(segment.get("id", index)),
@@ -37,20 +27,9 @@ def canonical_transcript(
                 "end_ms": _milliseconds(segment.get("end")),
                 "speaker_id": None,
                 "text": str(segment.get("text") or ""),
-                "words": words,
+                "words": [],
             }
         )
-    if not canonical_words:
-        for word in response.raw_response.get("words") or []:
-            if not isinstance(word, dict):
-                continue
-            canonical_words.append(
-                {
-                    "text": str(word.get("word") or word.get("text") or ""),
-                    "start_ms": _milliseconds(word.get("start")),
-                    "end_ms": _milliseconds(word.get("end")),
-                }
-            )
     rtf = (
         inference_duration_seconds / audio_duration_seconds
         if audio_duration_seconds and audio_duration_seconds > 0
@@ -62,7 +41,7 @@ def canonical_transcript(
         "source_id": source_id,
         "model": model_name,
         "text": response.text,
-        "words": canonical_words,
+        "words": [],
         "segments": segments,
         "metrics": {
             "inference_duration_seconds": inference_duration_seconds,

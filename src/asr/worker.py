@@ -91,6 +91,7 @@ class ASRWorker:
             base_url=item.base_url,
             api_key=self.settings.transcript_api_key.get_secret_value(),
             timeout_seconds=self.settings.asr_request_timeout_seconds,
+            num_beams=self.settings.asr_num_beams,
         )
 
     async def claim_next(self) -> uuid.UUID | None:
@@ -176,9 +177,9 @@ class ASRWorker:
     async def _finish_success(
         self,
         item: WorkItem,
-        response: TranscriptionResponse,
         transcript_payload: bytes,
         raw_text_payload: bytes,
+        external_request_id: str | None,
     ) -> None:
         prefix = f"meetings/{item.meeting_id}/results/{item.result_id}"
         uploads = (
@@ -193,16 +194,6 @@ class ASRWorker:
                 f"{prefix}/raw.txt",
                 raw_text_payload,
                 "text/plain; charset=utf-8",
-            ),
-            (
-                ResultArtifactType.WORD_TIMESTAMPS_JSON,
-                f"{prefix}/word-timestamps.json",
-                json.dumps(
-                    json.loads(transcript_payload).get("words", []),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ).encode("utf-8"),
-                "application/json",
             ),
         )
         uploaded: list[tuple[str, str]] = []
@@ -239,7 +230,7 @@ class ASRWorker:
                 now = datetime.now(timezone.utc)
                 attempt.status = ProcessingAttemptStatus.SUCCEEDED
                 attempt.finished_at = now
-                attempt.external_request_id = response.external_request_id
+                attempt.external_request_id = external_request_id
                 diarization_job = await queue_result_diarization(
                     session,
                     result,
@@ -370,9 +361,9 @@ class ASRWorker:
             ).encode("utf-8")
             await self._finish_success(
                 item,
-                response,
                 transcript_payload,
                 response.text.encode("utf-8"),
+                response.external_request_id,
             )
             logger.info(
                 "asr_processing_succeeded",

@@ -11,25 +11,25 @@ from diarization.provider import (
 )
 
 
-def _transcript(words):
+def _transcript(segments):
     return {
         "schema_version": "canonical-transcript/v1",
         "language": "fa",
         "source_id": "voice-1",
         "model": "whisper",
         "text": "سلام دنیا",
-        "words": words,
-        "segments": [],
+        "words": [],
+        "segments": segments,
         "metrics": {},
     }
 
 
-def test_alignment_uses_diarization_boundaries_and_assigns_each_word_once():
+def test_alignment_assigns_asr_segments_by_temporal_overlap():
     aligned = align_transcript_to_speakers(
         _transcript(
             [
-                {"text": "سلام", "start_ms": 100, "end_ms": 700},
-                {"text": "دنیا", "start_ms": 1100, "end_ms": 1500},
+                {"id": "a", "text": "سلام", "start_ms": 100, "end_ms": 700},
+                {"id": "b", "text": "دنیا", "start_ms": 1100, "end_ms": 1500},
             ]
         ),
         [
@@ -41,20 +41,24 @@ def test_alignment_uses_diarization_boundaries_and_assigns_each_word_once():
 
     assert aligned["schema_version"] == "speaker-transcript/v1"
     assert [(item["start_ms"], item["end_ms"]) for item in aligned["segments"]] == [
-        (0, 1000),
-        (1000, 2000),
+        (100, 700),
+        (1100, 1500),
     ]
     assert [item["speaker_id"] for item in aligned["segments"]] == [
         "SPEAKER_00",
         "SPEAKER_01",
     ]
+    assert [item["speaker_ids"] for item in aligned["segments"]] == [
+        ["SPEAKER_00"],
+        ["SPEAKER_01"],
+    ]
     assert [item["text"] for item in aligned["segments"]] == ["سلام", "دنیا"]
-    assert sum(len(item["words"]) for item in aligned["segments"]) == 2
+    assert aligned["words"] == []
 
 
-def test_alignment_resolves_overlapping_speakers_by_largest_word_overlap():
+def test_alignment_selects_speaker_with_largest_total_segment_overlap():
     aligned = align_transcript_to_speakers(
-        _transcript([{"text": "مرزی", "start_ms": 800, "end_ms": 1400}]),
+        _transcript([{"text": "مشترک", "start_ms": 800, "end_ms": 1400}]),
         [
             DiarizationTurn(0, 1000, "SPEAKER_00"),
             DiarizationTurn(900, 2000, "SPEAKER_01"),
@@ -62,21 +66,23 @@ def test_alignment_resolves_overlapping_speakers_by_largest_word_overlap():
         diarization_model="model",
     )
 
-    assert aligned["segments"][0]["words"] == []
-    assert aligned["segments"][1]["text"] == "مرزی"
+    segment = aligned["segments"][0]
+    assert segment["speaker_ids"] == ["SPEAKER_01"]
+    assert segment["speaker_id"] == "SPEAKER_01"
+    assert segment["text"] == "مشترک"
 
 
 @pytest.mark.parametrize(
-    ("words", "code"),
+    ("segments", "code"),
     [
-        ([], "missing_word_timestamps"),
-        ([{"text": "سلام", "start_ms": None, "end_ms": 100}], "invalid_word_timestamps"),
+        ([], "missing_segment_timestamps"),
+        ([{"text": "سلام", "start_ms": None, "end_ms": 100}], "invalid_segment_timestamps"),
     ],
 )
-def test_alignment_stops_with_explicit_error_for_missing_or_invalid_timestamps(words, code):
+def test_alignment_stops_for_missing_or_invalid_segment_timestamps(segments, code):
     with pytest.raises(DiarizationError) as raised:
         align_transcript_to_speakers(
-            _transcript(words),
+            _transcript(segments),
             [DiarizationTurn(0, 1000, "SPEAKER_00")],
             diarization_model="model",
         )
@@ -94,6 +100,19 @@ def test_alignment_stops_when_timestamped_text_has_no_detected_speaker():
         )
 
     assert raised.value.code == "no_speakers_detected"
+
+
+def test_alignment_assigns_non_overlapping_segment_to_nearest_speaker():
+    aligned = align_transcript_to_speakers(
+        _transcript([{"text": "میان سکوت", "start_ms": 1200, "end_ms": 1300}]),
+        [
+            DiarizationTurn(0, 1000, "SPEAKER_00"),
+            DiarizationTurn(1600, 2000, "SPEAKER_01"),
+        ],
+        diarization_model="model",
+    )
+
+    assert aligned["segments"][0]["speaker_ids"] == ["SPEAKER_00"]
 
 
 @pytest.mark.asyncio

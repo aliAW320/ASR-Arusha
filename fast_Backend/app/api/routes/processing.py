@@ -173,10 +173,20 @@ async def get_result_transcript(
         (
             item
             for item in result.artifacts
-            if item.artifact_type == ResultArtifactType.ALIGNED_TRANSCRIPT_JSON
+            if item.artifact_type == ResultArtifactType.CLEANED_TEXT
+            and item.content_type == "application/json"
         ),
         None,
     )
+    if artifact is None:
+        artifact = next(
+            (
+                item
+                for item in result.artifacts
+                if item.artifact_type == ResultArtifactType.ALIGNED_TRANSCRIPT_JSON
+            ),
+            None,
+        )
     if artifact is None:
         artifact = next(
             (
@@ -194,32 +204,48 @@ async def get_result_transcript(
         payload = json.loads(buffer.getvalue().decode("utf-8"))
     except Exception as error:
         raise HTTPException(status_code=503, detail="Transcript could not be read") from error
+    cleaner_job = next(
+        (
+            job
+            for job in sorted(
+                result.processing_jobs,
+                key=lambda item: item.created_at,
+                reverse=True,
+            )
+            if job.stage == ProcessingStage.CLEANING
+        ),
+        None,
+    )
     diarization_job = next(
         (
             job
-            for job in sorted(result.processing_jobs, key=lambda item: item.created_at, reverse=True)
+            for job in sorted(
+                result.processing_jobs,
+                key=lambda item: item.created_at,
+                reverse=True,
+            )
             if job.stage == ProcessingStage.DIARIZATION
         ),
         None,
     )
     processing_status = "transcription_succeeded"
     processing_error = None
-    if diarization_job is not None:
-        latest_attempt = diarization_job.latest_attempt
+    status_job = cleaner_job or diarization_job
+    if status_job is not None:
+        latest_attempt = status_job.latest_attempt
         processing_status = (
             latest_attempt.status.value if latest_attempt else ProcessingAttemptStatus.QUEUED.value
         )
-        failed_attempt = next(
-            (
-                attempt
-                for attempt in reversed(diarization_job.attempts)
-                if attempt.error_code or attempt.error_message
-            ),
-            None,
+        failed_attempt = (
+            latest_attempt
+            if latest_attempt
+            and latest_attempt.status == ProcessingAttemptStatus.FAILED
+            and (latest_attempt.error_code or latest_attempt.error_message)
+            else None
         )
         if failed_attempt is not None:
             processing_error = {
-                "stage": ProcessingStage.DIARIZATION.value,
+                "stage": status_job.stage.value,
                 "code": failed_attempt.error_code,
                 "message": failed_attempt.error_message,
                 "attempt_number": failed_attempt.attempt_number,

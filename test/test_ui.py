@@ -53,6 +53,8 @@ def test_ui_exposes_current_backend_flows_without_external_assets():
     assert "transcript-page.js" in javascript or (ROOT / "ui/js/transcript-page.js").is_file()
     assert 'speaker.textContent = segment.speaker_id' in javascript
     assert '$("#processing-error-message").textContent = error.message' in javascript
+    assert 'error.stage === "cleaning"' in javascript
+    assert "پاک‌سازی متن ناموفق بود" in javascript
 
 
 def test_each_ui_page_has_its_own_module():

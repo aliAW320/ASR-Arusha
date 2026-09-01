@@ -122,6 +122,84 @@ async def ensure_diarization_registry(
     return model
 
 
+async def ensure_cleaner_registry(
+    session: AsyncSession,
+    settings: Settings,
+) -> tuple[ModelDefinition, ExternalIntegration]:
+    runtime = await session.scalar(
+        select(ModelRuntime).where(ModelRuntime.name == "openai-compatible-cleaner")
+    )
+    if runtime is None:
+        runtime = ModelRuntime(
+            name="openai-compatible-cleaner",
+            kind=ModelRuntimeKind.REMOTE,
+        )
+        session.add(runtime)
+        await session.flush()
+
+    model = await session.scalar(
+        select(ModelDefinition).where(
+            ModelDefinition.runtime_id == runtime.id,
+            ModelDefinition.task_type == ModelTaskType.CLEANING,
+            ModelDefinition.name == settings.cleaner_model_name,
+            ModelDefinition.version == "configured",
+        )
+    )
+    if model is None:
+        model = ModelDefinition(
+            runtime=runtime,
+            task_type=ModelTaskType.CLEANING,
+            name=settings.cleaner_model_name,
+            version="configured",
+            source_uri=settings.base_url,
+        )
+        session.add(model)
+
+    integration_version = hashlib.sha256(settings.base_url.encode()).hexdigest()[:12]
+    integration = await session.scalar(
+        select(ExternalIntegration).where(
+            ExternalIntegration.name == "openai-compatible-cleaner-api",
+            ExternalIntegration.version == integration_version,
+        )
+    )
+    if integration is None:
+        integration = ExternalIntegration(
+            name="openai-compatible-cleaner-api",
+            version=integration_version,
+            kind=ExternalIntegrationKind.HTTP,
+            endpoint=settings.base_url,
+        )
+        session.add(integration)
+
+    await session.flush()
+    return model, integration
+
+
+async def queue_result_cleaning(
+    session: AsyncSession,
+    result: Result,
+    settings: Settings,
+    *,
+    depends_on: ProcessingJob,
+) -> ProcessingJob:
+    model, integration = await ensure_cleaner_registry(session, settings)
+    job = ProcessingJob(
+        result=result,
+        stage=ProcessingStage.CLEANING,
+        model=model,
+        integration=integration,
+        dependencies=[depends_on],
+    )
+    attempt = ProcessingAttempt(
+        job=job,
+        attempt_number=1,
+        status=ProcessingAttemptStatus.QUEUED,
+    )
+    session.add_all([job, attempt])
+    await session.flush()
+    return job
+
+
 async def queue_result_diarization(
     session: AsyncSession,
     result: Result,

@@ -40,7 +40,9 @@ function renderProcessingError(error) {
   if (!error) return;
   const panel = $("#processing-error");
   panel.classList.remove("hidden");
-  $("#processing-error-title").textContent = "تفکیک گوینده ناموفق بود";
+  $("#processing-error-title").textContent = error.stage === "cleaning"
+    ? "پاک‌سازی متن ناموفق بود"
+    : "تفکیک گوینده ناموفق بود";
   $("#processing-error-code").textContent = error.code || "diarization_error";
   $("#processing-error-message").textContent = error.message || "علت خطا ثبت نشده است.";
 }

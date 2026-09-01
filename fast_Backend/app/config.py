@@ -38,7 +38,7 @@ class Settings(BaseSettings):
 
     huggingface_token: SecretStr | None = None
     diarization_model_name: str = Field(
-        default="pyannote/speaker-diarization-3.1",
+        default="pyannote/speaker-diarization-community-1",
         validation_alias=AliasChoices("DIARIZATION_MODEL_NAME", "DIARIZATION_MODEL"),
     )
     diarization_model_version: str = "3.1"
@@ -46,6 +46,16 @@ class Settings(BaseSettings):
     diarization_max_attempts: int = Field(default=3, ge=1, le=10)
     diarization_poll_interval_seconds: float = Field(default=2.0, gt=0)
     diarization_worker_name: str = "diarization-worker"
+
+    cleaner_model_name: str = "openai/Qwen3.8-27B"
+    cleaner_request_timeout_seconds: int = Field(default=900, ge=30)
+    cleaner_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    cleaner_max_attempts: int = Field(default=3, ge=1, le=10)
+    cleaner_poll_interval_seconds: float = Field(default=2.0, gt=0)
+    cleaner_worker_name: str = "cleaner-worker"
+    cleaner_chunk_max_chars: int = Field(default=12_000, ge=1000)
+    cleaner_overlap_min_segments: int = Field(default=1, ge=0, le=20)
+    cleaner_overlap_max_segments: int = Field(default=5, ge=0, le=20)
 
     @property
     def json_logs_enabled(self) -> bool:

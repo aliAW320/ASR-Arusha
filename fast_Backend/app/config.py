@@ -1,5 +1,6 @@
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import quote
 
 from pydantic import AliasChoices, EmailStr, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -27,13 +28,25 @@ class Settings(BaseSettings):
     minio_exports_bucket: str = "transcript-exports"
     voice_upload_max_bytes: int = 500 * 1024 * 1024
 
+    rabbitmq_host: str = "rabbitmq"
+    rabbitmq_port: int = Field(default=5672, ge=1, le=65535)
+    rabbitmq_user: str = "meeting_app"
+    rabbitmq_password: SecretStr = SecretStr("change_me")
+    rabbitmq_vhost: str = "/"
+    rabbitmq_prefetch_count: int = Field(default=1, ge=1, le=100)
+    rabbitmq_retry_delay_seconds: float = Field(default=5.0, ge=0, le=3600)
+    rabbitmq_asr_queue: str = "asr.queue"
+    rabbitmq_diar_queue: str = "diar.queue"
+    rabbitmq_cleaning_queue: str = "cleaning.queue"
+    rabbitmq_mcp_queue: str = "mcp.queue"
+    rabbitmq_dead_letter_queue: str = "processing.dlq"
+
     base_url: str = "https://llm.irdc.arusha.ir/v1"
     transcript_api_key: SecretStr | None = None
     transcript_model_name: str = "whisper-large-v3-persian"
     asr_request_timeout_seconds: int = Field(default=600, ge=30)
     asr_num_beams: int = Field(default=5, ge=1, le=20)
     asr_max_attempts: int = Field(default=3, ge=1, le=10)
-    asr_poll_interval_seconds: float = Field(default=2.0, gt=0)
     asr_worker_name: str = "asr-worker"
 
     huggingface_token: SecretStr | None = None
@@ -44,14 +57,12 @@ class Settings(BaseSettings):
     diarization_model_version: str = "3.1"
     diarization_device: Literal["cpu", "cuda"] = "cpu"
     diarization_max_attempts: int = Field(default=3, ge=1, le=10)
-    diarization_poll_interval_seconds: float = Field(default=2.0, gt=0)
     diarization_worker_name: str = "diarization-worker"
 
     cleaner_model_name: str = "openai/Qwen3.8-27B"
     cleaner_request_timeout_seconds: int = Field(default=900, ge=30)
     cleaner_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     cleaner_max_attempts: int = Field(default=3, ge=1, le=10)
-    cleaner_poll_interval_seconds: float = Field(default=2.0, gt=0)
     cleaner_worker_name: str = "cleaner-worker"
     cleaner_chunk_max_chars: int = Field(default=12_000, ge=1000)
     cleaner_overlap_min_segments: int = Field(default=1, ge=0, le=20)
@@ -74,6 +85,13 @@ class Settings(BaseSettings):
         if self.log_format == "console":
             return False
         return self.app_env != "development"
+
+    @property
+    def rabbitmq_url(self) -> str:
+        user = quote(self.rabbitmq_user, safe="")
+        password = quote(self.rabbitmq_password.get_secret_value(), safe="")
+        vhost = "%2F" if self.rabbitmq_vhost == "/" else quote(self.rabbitmq_vhost, safe="")
+        return f"amqp://{user}:{password}@{self.rabbitmq_host}:{self.rabbitmq_port}/{vhost}"
 
     model_config = SettingsConfigDict(
         env_file=".env",

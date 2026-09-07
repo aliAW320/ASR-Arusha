@@ -90,7 +90,7 @@ def test_ci_builds_and_publishes_the_ui_image():
     assert "dockerfile: Docker/ui.Dockerfile" in workflow
     assert "local_image: asr-arusha-ui:ci" in workflow
     assert "registry_image: asr-arusha-ui" in workflow
-    assert "up -d --no-build postgres minio api" in workflow
+    assert "up -d --no-build postgres minio rabbitmq api" in workflow
 
 
 def test_meeting_transcript_page_exists_and_wires_its_own_module():

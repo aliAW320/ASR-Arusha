@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.models import (
+    BrokerOutboxMessage,
     ExternalIntegration,
     DiarizationSpeaker,
     History,
@@ -286,7 +287,19 @@ async def test_diarization_worker_finishes_pipeline_and_exposes_speaker_transcri
     )
 
     assert await asr_worker.run_once() is True
+    async with session_factory() as session:
+        assert await session.scalar(
+            select(func.count(BrokerOutboxMessage.id)).where(
+                BrokerOutboxMessage.queue_name == "cleaning.queue"
+            )
+        ) == 0
     assert await diarization_worker.run_once() is True
+    async with session_factory() as session:
+        assert await session.scalar(
+            select(func.count(BrokerOutboxMessage.id)).where(
+                BrokerOutboxMessage.queue_name == "cleaning.queue"
+            )
+        ) == 1
     assert await cleaner_worker.run_once() is True
 
     results = await client.get(
@@ -326,6 +339,19 @@ async def test_diarization_worker_finishes_pipeline_and_exposes_speaker_transcri
             ProcessingStage.MEETING_COMPOSE,
         }
         assert labels == {"SPEAKER_00", "SPEAKER_01"}
+        mcp_messages = (
+            await session.scalars(
+                select(BrokerOutboxMessage).where(
+                    BrokerOutboxMessage.queue_name == "mcp.queue"
+                )
+            )
+        ).all()
+        assert len(mcp_messages) == 1
+        assert mcp_messages[0].payload["voice_id"] == voice["id"]
+        assert mcp_messages[0].payload["result_id"] == result["id"]
+        assert mcp_messages[0].payload["artifact_key"].endswith(
+            "/cleaned-transcript.json"
+        )
 
 
 class SegmentOnlyProvider:

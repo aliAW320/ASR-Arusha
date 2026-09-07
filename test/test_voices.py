@@ -8,6 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.database import get_db_session
 from app.main import app
 from app.models import (
+    BrokerOutboxMessage,
     History,
     ProcessingAttempt,
     ProcessingJob,
@@ -39,6 +40,17 @@ async def test_audio_upload_is_stored_in_minio_and_postgres(client, session):
     assert client.storage.objects[(voice.minio_bucket, voice.minio_key)] == content
     assert await session.scalar(select(ProcessingJob.id)) is not None
     assert await session.scalar(select(ProcessingAttempt.id)) is not None
+    outbox = (
+        await session.scalars(
+            select(BrokerOutboxMessage).order_by(BrokerOutboxMessage.queue_name)
+        )
+    ).all()
+    assert [message.queue_name for message in outbox] == ["asr.queue", "diar.queue"]
+    assert {message.payload["stage"] for message in outbox} == {
+        "transcription",
+        "diarization",
+    }
+    assert all(message.deduplication_key.startswith("attempt:") for message in outbox)
     assert await session.scalar(
         select(History.id).where(History.event_type == "voice.uploaded")
     ) is not None

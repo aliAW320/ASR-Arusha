@@ -29,6 +29,9 @@ from app.models import (
     VoiceStatus,
 )
 from app.observability.logging import configure_logging, get_logger
+from app.messaging.consumer import consume_attempt_queue
+from app.messaging.outbox import enqueue_attempt
+from app.messaging.topology import QueueNames
 from app.services.audit import add_history_event
 from app.services.processing import align_result_if_ready
 from app.storage.base import ObjectStorage
@@ -94,9 +97,9 @@ class ASRWorker:
             num_beams=self.settings.asr_num_beams,
         )
 
-    async def claim_next(self) -> uuid.UUID | None:
+    async def claim_next(self, attempt_id: uuid.UUID | None = None) -> uuid.UUID | None:
         async with self.session_factory() as session:
-            attempt = await session.scalar(
+            statement = (
                 select(ProcessingAttempt)
                 .join(ProcessingAttempt.job)
                 .options(
@@ -115,6 +118,9 @@ class ASRWorker:
                 .with_for_update(skip_locked=True, of=ProcessingAttempt)
                 .limit(1)
             )
+            if attempt_id is not None:
+                statement = statement.where(ProcessingAttempt.id == attempt_id)
+            attempt = await session.scalar(statement)
             if attempt is None:
                 return None
             attempt.status = ProcessingAttemptStatus.RUNNING
@@ -231,7 +237,8 @@ class ASRWorker:
                 attempt.status = ProcessingAttemptStatus.SUCCEEDED
                 attempt.finished_at = now
                 attempt.external_request_id = external_request_id
-                voice.status = VoiceStatus.PENDING
+                if voice.status != VoiceStatus.ERROR:
+                    voice.status = VoiceStatus.PENDING
                 meeting = await session.get(Meeting, voice.meeting_id) if voice.meeting_id else None
                 add_history_event(
                     session,
@@ -301,12 +308,19 @@ class ASRWorker:
             attempt.error_message = message[:2000]
             will_retry = retryable and attempt.attempt_number < self.settings.asr_max_attempts
             if will_retry:
-                session.add(
-                    ProcessingAttempt(
-                        job=job,
-                        attempt_number=attempt.attempt_number + 1,
-                        status=ProcessingAttemptStatus.QUEUED,
-                    )
+                retry_attempt = ProcessingAttempt(
+                    job=job,
+                    attempt_number=attempt.attempt_number + 1,
+                    status=ProcessingAttemptStatus.QUEUED,
+                )
+                session.add(retry_attempt)
+                await session.flush()
+                enqueue_attempt(
+                    session,
+                    retry_attempt,
+                    ProcessingStage.TRANSCRIPTION,
+                    self.settings,
+                    retry=True,
                 )
             else:
                 voice.status = VoiceStatus.ERROR
@@ -330,8 +344,8 @@ class ASRWorker:
             )
             await session.commit()
 
-    async def run_once(self) -> bool:
-        attempt_id = await self.claim_next()
+    async def run_once(self, requested_attempt_id: uuid.UUID | None = None) -> bool:
+        attempt_id = await self.claim_next(requested_attempt_id)
         if attempt_id is None:
             return False
         item = await self._load_work_item(attempt_id)
@@ -419,18 +433,12 @@ async def run_forever() -> None:
     )
     logger.info("asr_worker_started", "ASR worker started", worker_name=worker.worker_name)
     try:
-        while True:
-            try:
-                worked = await worker.run_once()
-            except Exception as error:
-                logger.exception(
-                    "asr_worker_iteration_failed",
-                    "ASR worker iteration failed",
-                    error=error,
-                )
-                worked = False
-            if not worked:
-                await asyncio.sleep(settings.asr_poll_interval_seconds)
+        await consume_attempt_queue(
+            settings=settings,
+            queue_name=QueueNames.from_settings(settings).asr,
+            session_factory=SessionFactory,
+            handler=worker.run_once,
+        )
     finally:
         await close_database()
 

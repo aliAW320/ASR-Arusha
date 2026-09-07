@@ -99,6 +99,11 @@ jobs:
             local_image: asr-arusha-meeting-composer:ci
             registry_image: asr-arusha-meeting-composer
             run_compose_integration: false
+          - name: broker-dispatcher
+            dockerfile: Docker/broker-dispatcher.Dockerfile
+            local_image: asr-arusha-broker-dispatcher:ci
+            registry_image: asr-arusha-broker-dispatcher
+            run_compose_integration: false
 
     steps:
       - name: Checkout repository
@@ -178,6 +183,11 @@ jobs:
           MINIO_EXPORTS_BUCKET=transcript-exports
           VOICE_UPLOAD_MAX_BYTES=524288000
 
+          RABBITMQ_USER=meeting_ci
+          RABBITMQ_PASSWORD=ci-rabbitmq-password
+          RABBITMQ_AMQP_PORT=5672
+          RABBITMQ_MANAGEMENT_PORT=15672
+
           OBJECT_STORAGE_BACKEND=minio
           EOF
 
@@ -189,7 +199,7 @@ jobs:
           docker compose \
             -f docker-compose.yml \
             -f docker-compose.ci.yml \
-            up -d --no-build postgres minio api
+            up -d --no-build postgres minio rabbitmq api
 
       - name: Wait for API
         if: matrix.run_compose_integration
@@ -216,7 +226,7 @@ jobs:
               docker compose \
                 -f docker-compose.yml \
                 -f docker-compose.ci.yml \
-                logs --no-color api postgres minio || true
+                logs --no-color api postgres minio rabbitmq || true
 
               exit 1
             fi
@@ -280,7 +290,7 @@ jobs:
           docker compose \
             -f docker-compose.yml \
             -f docker-compose.ci.yml \
-            logs --no-color api postgres minio || true
+              logs --no-color api postgres minio rabbitmq || true
 
           exit 1
 
@@ -307,7 +317,7 @@ jobs:
           docker compose \
             -f docker-compose.yml \
             -f docker-compose.ci.yml \
-            logs --no-color api postgres minio || true
+            logs --no-color api postgres minio rabbitmq || true
 
       - name: Stop integration stack
         if: always() && matrix.run_compose_integration

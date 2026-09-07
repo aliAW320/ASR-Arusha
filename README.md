@@ -163,19 +163,29 @@ LOG_FORMAT=auto            # auto | json | console
 
 History یک audit trail تجاری جدا از log عملیاتی است، ولی `request_id` و `correlation_id` مشترک دارد. ادمین می‌تواند `GET /history` را علاوه بر event/actor با queryهای `request_id` و `correlation_id` فیلتر کند.
 
-## پردازش ASR
+## پردازش صوت و RabbitMQ
 
-آپلود Voice به‌تنهایی پردازش را شروع نمی‌کند. کاربر دارای مجوز مدیریت Voice با `POST /meetings/{meeting_id}/process` برای هر Voice یک Result، Job و Attempt پایدار ایجاد می‌کند و پاسخ سریع `202` می‌گیرد. سرویس مستقل `asr` صف PostgreSQL را poll می‌کند، فایل را از MinIO می‌خواند و به endpoint سازگار با OpenAI در `/audio/transcriptions` می‌فرستد.
+آپلود موفق Voice به‌صورت خودکار یک Result و دو Job مستقل برای ASR و diarization ایجاد می‌کند. ایجاد Job، Attempt و پیام outbox در همان transaction دیتابیس انجام می‌شود؛ بنابراین قطع‌شدن RabbitMQ باعث گم‌شدن کار نمی‌شود. سرویس مستقل `broker-dispatcher` پیام‌های outbox را با publisher-confirm به RabbitMQ می‌فرستد و workerها با `prefetch=1` آن‌ها را مصرف می‌کنند.
+
+چهار صف durable عبارت‌اند از `asr.queue`، `diar.queue`، `cleaning.queue` و `mcp.queue`. هر چهار صف به DLX مشترک متصل‌اند. فایل صوتی داخل broker قرار نمی‌گیرد و پیام فقط شناسه‌های PostgreSQL را حمل می‌کند. ASR و diarization هم‌زمان اجرا می‌شوند؛ barrier پایدار PostgreSQL بعد از موفقیت هر دو فقط یک Job cleaning ایجاد می‌کند. موفقیت cleaner یک پیام در `mcp.queue` قرار می‌دهد، اما worker و قرارداد MCP فعلاً عمداً پیاده‌سازی نشده‌اند.
+
+ACK بعد از ثبت پایدار نتیجه در PostgreSQL و MinIO ارسال می‌شود. خطاهای موقت با Attempt جدید، حداکثر سه بار و با تأخیر قابل تنظیم retry می‌شوند؛ خطای نهایی با `reject(requeue=false)` به `processing.dlq` می‌رود و جزئیات آن در ProcessingAttempt و History برای API/UI باقی می‌ماند. تحویل تکراری با وضعیت Attempt و کلید یکتای outbox idempotent شده است.
 
 تنظیمات لازم در `.env`:
 
 ```text
+RABBITMQ_HOST=rabbitmq
+RABBITMQ_PORT=5672
+RABBITMQ_USER=meeting_app
+RABBITMQ_PASSWORD=...
+RABBITMQ_PREFETCH_COUNT=1
+RABBITMQ_RETRY_DELAY_SECONDS=5
+
 BASE_URL=https://example.com/v1
 TRANSCRIPT_API_KEY=...
 TRANSCRIPT_MODEL_NAME=whisper-large-v3-persian
 ASR_REQUEST_TIMEOUT_SECONDS=600
 ASR_MAX_ATTEMPTS=3
-ASR_POLL_INTERVAL_SECONDS=2
 ASR_WORKER_NAME=asr-worker
 ```
 
@@ -214,6 +224,7 @@ test_architecture.py
 test_compose_integration.py
 test_asr.py
 test_processing.py
+test_messaging.py
 test_asr_benchmark.py            # فقط اجرای دستی؛ خارج از CI
 ```
 

@@ -34,9 +34,25 @@ def test_initial_migration_builds_the_backend_schema(tmp_path):
         "meeting_members",
         "voices",
         "history",
+        "broker_outbox_messages",
     } <= tables
     history_columns = {column["name"] for column in inspector.get_columns("history")}
     assert "correlation_id" in history_columns
+    outbox_columns = {
+        column["name"]
+        for column in inspector.get_columns("broker_outbox_messages")
+    }
+    assert {
+        "id",
+        "queue_name",
+        "payload",
+        "deduplication_key",
+        "available_at",
+        "published_at",
+        "publish_attempts",
+        "last_error",
+        "created_at",
+    } == outbox_columns
 
 
 def test_migration_adopts_legacy_create_all_schema(tmp_path):
@@ -193,7 +209,7 @@ def test_meeting_composer_migration_downgrade_restores_plain_association_table(t
     environment = os.environ.copy()
     environment["DATABASE_URL"] = f"sqlite+aiosqlite:///{database_path}"
     environment["JWT_SECRET_KEY"] = "test-secret-key-that-is-at-least-32-characters"
-    subprocess.run(
+    upgrade = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=os.getcwd(),
         env=environment,
@@ -201,8 +217,9 @@ def test_meeting_composer_migration_downgrade_restores_plain_association_table(t
         text=True,
         timeout=30,
     )
+    assert upgrade.returncode == 0, upgrade.stderr
     result = subprocess.run(
-        [sys.executable, "-m", "alembic", "downgrade", "-1"],
+        [sys.executable, "-m", "alembic", "downgrade", "b7c21e08d4f1"],
         cwd=os.getcwd(),
         env=environment,
         capture_output=True,

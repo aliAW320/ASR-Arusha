@@ -1,22 +1,15 @@
 import asyncio
 import inspect
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-
-class DiarizationError(Exception):
-    def __init__(self, message: str, *, code: str, retryable: bool):
-        super().__init__(message)
-        self.code = code
-        self.retryable = retryable
-
-
-@dataclass(frozen=True)
-class DiarizationTurn:
-    start_ms: int
-    end_ms: int
-    speaker_id: str
+# Canonical definitions live in the dependency-free `alignment` package so
+# app/services/processing.py (imported by every service's container, not
+# just this one) can use them without pulling in this module's lazy
+# torch/pyannote imports. Re-exported here so existing `from
+# diarization.provider import DiarizationError, DiarizationTurn` call sites
+# throughout this worker and its tests keep working unchanged.
+from alignment.types import DiarizationError, DiarizationTurn  # noqa: F401
 
 
 class DiarizationProvider(Protocol):

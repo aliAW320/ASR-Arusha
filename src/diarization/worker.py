@@ -32,11 +32,10 @@ from app.models import (
 )
 from app.observability.logging import configure_logging, get_logger
 from app.services.audit import add_history_event
-from app.services.processing import queue_result_cleaning
+from app.services.processing import align_result_if_ready
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
 
-from .alignment import align_transcript_to_speakers
 from .provider import DiarizationError, DiarizationProvider, DiarizationTurn, PyannoteLocalProvider
 
 
@@ -54,8 +53,6 @@ class WorkItem:
     source_bucket: str
     source_key: str
     filename: str
-    transcript_bucket: str
-    transcript_key: str
     model_name: str
 
 
@@ -141,18 +138,6 @@ class DiarizationWorker:
             if attempt is None or attempt.job.result is None or attempt.job.model is None:
                 raise RuntimeError("Queued diarization job is incomplete")
             result = attempt.job.result
-            transcript = await session.scalar(
-                select(ResultArtifact).where(
-                    ResultArtifact.result_id == result.id,
-                    ResultArtifact.artifact_type == ResultArtifactType.TRANSCRIPT_JSON,
-                )
-            )
-            if transcript is None:
-                raise DiarizationError(
-                    "Canonical ASR transcript artifact is missing",
-                    code="missing_transcript_artifact",
-                    retryable=False,
-                )
             voice = result.voice
             return WorkItem(
                 attempt_id=attempt.id,
@@ -164,8 +149,6 @@ class DiarizationWorker:
                 source_bucket=voice.minio_bucket,
                 source_key=voice.minio_key,
                 filename=voice.original_filename or "voice.bin",
-                transcript_bucket=transcript.minio_bucket,
-                transcript_key=transcript.minio_key,
                 model_name=attempt.job.model.name,
             )
 
@@ -173,7 +156,6 @@ class DiarizationWorker:
         self,
         item: WorkItem,
         turns: list[DiarizationTurn],
-        aligned: dict,
     ) -> None:
         prefix = f"meetings/{item.meeting_id}/results/{item.result_id}"
         diarization = {
@@ -188,29 +170,16 @@ class DiarizationWorker:
                 for turn in turns
             ],
         }
-        uploads = (
-            (
-                ResultArtifactType.DIARIZATION_JSON,
-                f"{prefix}/diarization.json",
-                json.dumps(diarization, ensure_ascii=False, separators=(",", ":")).encode(),
-            ),
-            (
-                ResultArtifactType.ALIGNED_TRANSCRIPT_JSON,
-                f"{prefix}/speaker-transcript.json",
-                json.dumps(aligned, ensure_ascii=False, separators=(",", ":")).encode(),
-            ),
-        )
-        uploaded: list[tuple[str, str]] = []
+        key = f"{prefix}/diarization.json"
+        payload = json.dumps(diarization, ensure_ascii=False, separators=(",", ":")).encode()
         try:
-            for _, key, payload in uploads:
-                await self.storage.put_object(
-                    self.settings.minio_exports_bucket,
-                    key,
-                    io.BytesIO(payload),
-                    len(payload),
-                    "application/json",
-                )
-                uploaded.append((self.settings.minio_exports_bucket, key))
+            await self.storage.put_object(
+                self.settings.minio_exports_bucket,
+                key,
+                io.BytesIO(payload),
+                len(payload),
+                "application/json",
+            )
 
             async with self.session_factory() as session:
                 attempt = await session.get(ProcessingAttempt, item.attempt_id)
@@ -219,35 +188,30 @@ class DiarizationWorker:
                 voice = await session.get(VoiceFile, item.voice_id)
                 if attempt is None or job is None or result is None or voice is None:
                     raise RuntimeError("Diarization job state disappeared before completion")
-                for artifact_type, key, payload in uploads:
-                    session.add(
-                        ResultArtifact(
-                            result=result,
-                            artifact_type=artifact_type,
-                            minio_bucket=self.settings.minio_exports_bucket,
-                            minio_key=key,
-                            content_type="application/json",
-                            checksum_sha256=hashlib.sha256(payload).hexdigest(),
-                            producer_job=job,
-                        )
+                session.add(
+                    ResultArtifact(
+                        result=result,
+                        artifact_type=ResultArtifactType.DIARIZATION_JSON,
+                        minio_bucket=self.settings.minio_exports_bucket,
+                        minio_key=key,
+                        content_type="application/json",
+                        checksum_sha256=hashlib.sha256(payload).hexdigest(),
+                        producer_job=job,
                     )
+                )
                 for label in sorted({turn.speaker_id for turn in turns}):
                     session.add(DiarizationSpeaker(result=result, label=label))
                 now = datetime.now(timezone.utc)
                 attempt.status = ProcessingAttemptStatus.SUCCEEDED
                 attempt.finished_at = now
+                # Stays PENDING: cleaning is queued once alignment (which
+                # needs both this and the ASR transcript) completes, not here.
                 voice.status = VoiceStatus.PENDING
-                cleaning_job = await queue_result_cleaning(
-                    session,
-                    result,
-                    self.settings,
-                    depends_on=job,
-                )
                 meeting = await session.get(Meeting, voice.meeting_id) if voice.meeting_id else None
                 add_history_event(
                     session,
                     event_type="processing.succeeded",
-                    description="Speaker diarization and transcript alignment completed",
+                    description="Speaker diarization completed",
                     event_data={
                         "job_id": str(job.id),
                         "attempt_number": attempt.attempt_number,
@@ -257,31 +221,41 @@ class DiarizationWorker:
                     affected_meetings=[meeting] if meeting else [],
                     affected_voices=[voice],
                 )
-                add_history_event(
-                    session,
-                    event_type="processing.queued",
-                    description="Transcript cleaning queued",
-                    event_data={
-                        "job_id": str(cleaning_job.id),
-                        "stage": ProcessingStage.CLEANING.value,
-                    },
-                    affected_meetings=[meeting] if meeting else [],
-                    affected_voices=[voice],
-                )
                 await session.commit()
         except Exception:
-            for bucket, key in uploaded:
-                try:
-                    await self.storage.remove_object(bucket, key)
-                except Exception as cleanup_error:
-                    logger.exception(
-                        "diarization_artifact_cleanup_failed",
-                        "Diarization artifact cleanup failed",
-                        error=cleanup_error,
-                        bucket=bucket,
-                        object_key=key,
-                    )
+            try:
+                await self.storage.remove_object(self.settings.minio_exports_bucket, key)
+            except Exception as cleanup_error:
+                logger.exception(
+                    "diarization_artifact_cleanup_failed",
+                    "Diarization artifact cleanup failed",
+                    error=cleanup_error,
+                    bucket=self.settings.minio_exports_bucket,
+                    object_key=key,
+                )
             raise
+
+        # Deliberately a separate transaction from the diarization success
+        # above, mirroring the ASR worker: alignment either does nothing
+        # (transcription isn't done yet) or merges + queues cleaning, and
+        # neither outcome should be able to roll back the diarization result
+        # that just committed.
+        try:
+            async with self.session_factory() as session:
+                result = await session.get(Result, item.result_id)
+                if result is None:
+                    return
+                await align_result_if_ready(
+                    session, result, item.meeting_id, self.settings, self.storage
+                )
+                await session.commit()
+        except Exception as error:
+            logger.exception(
+                "alignment_trigger_failed",
+                "Speaker alignment trigger failed after diarization succeeded",
+                error=error,
+                result_id=str(item.result_id),
+            )
 
     async def _finish_failure(
         self,
@@ -344,22 +318,10 @@ class DiarizationWorker:
             provider = self.provider_factory(item)
             with tempfile.TemporaryDirectory(prefix="diarization-") as temp_dir:
                 audio_path = Path(temp_dir) / Path(item.filename).name
-                transcript_buffer = io.BytesIO()
                 with audio_path.open("w+b") as audio:
                     await self.storage.download_object(item.source_bucket, item.source_key, audio)
-                await self.storage.download_object(
-                    item.transcript_bucket,
-                    item.transcript_key,
-                    transcript_buffer,
-                )
-                transcript = json.loads(transcript_buffer.getvalue().decode("utf-8"))
                 turns = await provider.diarize(audio_path)
-            aligned = align_transcript_to_speakers(
-                transcript,
-                turns,
-                diarization_model=item.model_name,
-            )
-            await self._finish_success(item, turns, aligned)
+            await self._finish_success(item, turns)
             logger.info(
                 "diarization_processing_succeeded",
                 "Speaker diarization completed",

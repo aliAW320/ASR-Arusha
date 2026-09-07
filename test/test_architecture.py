@@ -112,21 +112,54 @@ def test_meeting_composer_is_an_isolated_cpu_only_worker():
     assert "pyannote" not in dockerfile.lower()
 
 
-def test_every_image_that_imports_app_services_processing_ships_meeting_composer():
-    # app/services/processing.py imports meeting_composer.composer at module
-    # level (shared fingerprint/offset algorithm), so importing *anything*
-    # from that module -- even just queue_result_diarization or
-    # queue_result_cleaning -- transitively requires the meeting_composer
-    # package to be on the image. Each of these Dockerfiles copies its own
-    # file list independently, so each must be checked independently: a
-    # missing COPY here is a container that builds fine and then
+def test_every_image_that_imports_app_services_processing_ships_its_dependencies():
+    # app/services/processing.py imports meeting_composer.composer (shared
+    # fingerprint/offset algorithm) and alignment.merge/alignment.types
+    # (shared word/speaker merge algorithm + DiarizationTurn/DiarizationError)
+    # at module level, so importing *anything* from that module -- even just
+    # queue_result_cleaning -- transitively requires both packages on the
+    # image. Both are dependency-free by design (no ML imports at module
+    # level, verified below), which is exactly what makes them safe to share
+    # across every service without violating "services only talk through the
+    # API" -- unlike the real diarization worker code (Pyannote/torch),
+    # which must stay inside the diarization image alone (see the isolation
+    # test right after this one). Each Dockerfile copies its own file list
+    # independently, so each must be checked independently: a missing COPY
+    # here is a container that builds fine and then
     # ModuleNotFoundError-crash-loops at runtime (caught live in this repo
-    # while wiring the feature in).
+    # while wiring both of these features in).
     for dockerfile_name in (
         "api.Dockerfile",
         "cleaner.Dockerfile",
         "asr.Dockerfile",
         "diarization.Dockerfile",
+        "meeting-composer.Dockerfile",
     ):
         dockerfile = (PROJECT_ROOT / "Docker" / dockerfile_name).read_text()
         assert "COPY src/meeting_composer ./meeting_composer" in dockerfile, dockerfile_name
+        assert "COPY src/alignment ./alignment" in dockerfile, dockerfile_name
+
+
+def test_diarization_service_code_stays_inside_its_own_image():
+    # The inverse of the test above: only the diarization image may ship the
+    # actual diarization service code (Pyannote provider, worker, chunking).
+    # Every other service must talk to diarization results through the
+    # database/object storage only, never by importing its worker code.
+    for dockerfile_name in ("api.Dockerfile", "cleaner.Dockerfile", "asr.Dockerfile", "meeting-composer.Dockerfile"):
+        dockerfile = (PROJECT_ROOT / "Docker" / dockerfile_name).read_text()
+        assert "src/diarization" not in dockerfile, dockerfile_name
+
+    for module in ("asr.worker", "cleaner.worker", "meeting_composer.worker"):
+        source = (PROJECT_ROOT / "src" / module.replace(".", "/")).with_suffix(".py").read_text()
+        assert not any(
+            line.startswith(("import diarization", "from diarization"))
+            for line in source.splitlines()
+        ), module
+
+    processing_source = (
+        PROJECT_ROOT / "fast_Backend" / "app" / "services" / "processing.py"
+    ).read_text()
+    assert not any(
+        line.startswith(("import diarization", "from diarization"))
+        for line in processing_source.splitlines()
+    )

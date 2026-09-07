@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, BinaryIO
 
 import httpx
@@ -17,6 +17,7 @@ class TranscriptionResponse:
     language: str
     segments: list[dict[str, Any]]
     raw_response: dict[str, Any]
+    words: list[dict[str, Any]] = field(default_factory=list)
     external_request_id: str | None = None
 
 
@@ -61,8 +62,10 @@ class OpenAICompatibleTranscriptionProvider:
                     "model": model,
                     "language": "fa",
                     "response_format": "verbose_json",
+                    "timestamp_granularities[]": "word",
                     "extra_body[use_beam_search]": "true",
                     "extra_body[num_beams]": str(self.num_beams),
+                    "vad_filter": "true",
                 },
                 files={"file": (filename, audio, content_type)},
             )
@@ -103,11 +106,13 @@ class OpenAICompatibleTranscriptionProvider:
                 retryable=False,
             )
         segments = payload.get("segments")
+        words = payload.get("words")
         return TranscriptionResponse(
             text=payload["text"],
             language=str(payload.get("language") or "fa"),
             segments=segments if isinstance(segments, list) else [],
             raw_response=payload,
+            words=words if isinstance(words, list) else [],
             external_request_id=response.headers.get("x-request-id"),
         )
 

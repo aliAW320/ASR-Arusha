@@ -2,11 +2,14 @@ import hashlib
 import io
 import json
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
+from alignment.merge import align_transcript_to_speakers
+from alignment.types import DiarizationError, DiarizationTurn
 from meeting_composer.composer import FINGERPRINT_POLICY_VERSION, compute_offsets, compute_source_fingerprint
 
 from ..config import Settings
@@ -32,6 +35,7 @@ from ..models import (
 )
 from ..schemas import ProcessingJobResponse
 from ..storage.base import ObjectStorage
+from .audit import add_history_event
 
 
 class MeetingCompositionError(ValueError):
@@ -222,28 +226,202 @@ async def queue_result_cleaning(
     return job
 
 
-async def queue_result_diarization(
+async def _queue_transcription_and_diarization(
     session: AsyncSession,
     result: Result,
     settings: Settings,
-    *,
-    depends_on: ProcessingJob,
-) -> ProcessingJob:
-    """Queue local speaker diarization after transcription artifacts exist."""
-    model = await ensure_diarization_registry(session, settings)
-    job = ProcessingJob(
+) -> tuple[ProcessingJob, ProcessingJob]:
+    """Queue TRANSCRIPTION and DIARIZATION as independent root jobs.
+
+    Both read the same source audio and neither depends on the other, so
+    they can run in parallel or in either order -- whichever finishes second
+    triggers alignment (see align_result_if_ready). This replaces the old
+    diarization-depends-on-transcription chain, which forced diarization to
+    wait even though it never actually needed the ASR output.
+    """
+    # Each job (and its attempt) is added to the session immediately after
+    # construction, before the *next* ensure_*_registry call flushes: those
+    # registry lookups can themselves flush, and a job already linked into a
+    # persisted object's relationship collection (via the result=/model=
+    # kwargs above) but not yet added to the session trips a SQLAlchemy
+    # "will not proceed" cascade warning at that flush.
+    transcription_model, integration = await ensure_transcription_registry(session, settings)
+    transcription_job = ProcessingJob(
+        result=result,
+        stage=ProcessingStage.TRANSCRIPTION,
+        model=transcription_model,
+        integration=integration,
+    )
+    session.add_all(
+        [
+            transcription_job,
+            ProcessingAttempt(
+                job=transcription_job, attempt_number=1, status=ProcessingAttemptStatus.QUEUED
+            ),
+        ]
+    )
+
+    diarization_model = await ensure_diarization_registry(session, settings)
+    diarization_job = ProcessingJob(
         result=result,
         stage=ProcessingStage.DIARIZATION,
-        model=model,
-        dependencies=[depends_on],
+        model=diarization_model,
     )
+    session.add_all(
+        [
+            diarization_job,
+            ProcessingAttempt(
+                job=diarization_job, attempt_number=1, status=ProcessingAttemptStatus.QUEUED
+            ),
+        ]
+    )
+
+    await session.flush()
+    return transcription_job, diarization_job
+
+
+async def align_result_if_ready(
+    session: AsyncSession,
+    result: Result,
+    meeting_id: uuid.UUID | None,
+    settings: Settings,
+    storage: ObjectStorage,
+) -> ProcessingJob | None:
+    """Best-effort: merge ASR words with diarization turns once both are
+    available for this Result, then queue cleaning.
+
+    Safe to call from either the ASR or the diarization worker's success
+    path, in either order -- whichever call observes both artifacts already
+    present is the one that performs the merge; the other call is a no-op.
+    Never raises for "not ready yet"; a genuine alignment failure (e.g. no
+    speakers detected) is recorded on the ALIGNMENT job/attempt and returned
+    to the caller rather than swallowed, since -- unlike "not ready yet" --
+    it is a real, actionable outcome the caller should log.
+    """
+    await session.execute(select(Result.id).where(Result.id == result.id).with_for_update())
+    already_aligned = await session.scalar(
+        select(ProcessingJob.id).where(
+            ProcessingJob.result_id == result.id,
+            ProcessingJob.stage == ProcessingStage.ALIGNMENT,
+        )
+    )
+    if already_aligned is not None:
+        return None
+
+    transcript_artifact = await session.scalar(
+        select(ResultArtifact).where(
+            ResultArtifact.result_id == result.id,
+            ResultArtifact.artifact_type == ResultArtifactType.TRANSCRIPT_JSON,
+        )
+    )
+    diarization_artifact = await session.scalar(
+        select(ResultArtifact).where(
+            ResultArtifact.result_id == result.id,
+            ResultArtifact.artifact_type == ResultArtifactType.DIARIZATION_JSON,
+        )
+    )
+    if transcript_artifact is None or diarization_artifact is None:
+        return None
+
+    transcript_buffer = io.BytesIO()
+    await storage.download_object(
+        transcript_artifact.minio_bucket, transcript_artifact.minio_key, transcript_buffer
+    )
+    transcript = json.loads(transcript_buffer.getvalue().decode("utf-8"))
+
+    diarization_buffer = io.BytesIO()
+    await storage.download_object(
+        diarization_artifact.minio_bucket, diarization_artifact.minio_key, diarization_buffer
+    )
+    diarization_payload = json.loads(diarization_buffer.getvalue().decode("utf-8"))
+    turns = [
+        DiarizationTurn(int(turn["start_ms"]), int(turn["end_ms"]), str(turn["speaker_id"]))
+        for turn in diarization_payload.get("segments", [])
+    ]
+
+    dependency_job_ids = [
+        job_id
+        for job_id in (transcript_artifact.producer_job_id, diarization_artifact.producer_job_id)
+        if job_id is not None
+    ]
+    dependencies = (
+        (await session.scalars(select(ProcessingJob).where(ProcessingJob.id.in_(dependency_job_ids)))).all()
+        if dependency_job_ids
+        else []
+    )
+    job = ProcessingJob(result=result, stage=ProcessingStage.ALIGNMENT, dependencies=list(dependencies))
+    now = datetime.now(timezone.utc)
     attempt = ProcessingAttempt(
-        job=job,
-        attempt_number=1,
-        status=ProcessingAttemptStatus.QUEUED,
+        job=job, attempt_number=1, status=ProcessingAttemptStatus.RUNNING, started_at=now
     )
     session.add_all([job, attempt])
     await session.flush()
+
+    try:
+        aligned = align_transcript_to_speakers(
+            transcript, turns, diarization_model=diarization_payload.get("model") or ""
+        )
+    except DiarizationError as error:
+        attempt.status = ProcessingAttemptStatus.FAILED
+        attempt.finished_at = datetime.now(timezone.utc)
+        attempt.error_code = error.code[:100]
+        attempt.error_message = str(error)[:2000]
+        add_history_event(
+            session,
+            event_type="processing.failed",
+            description="Speaker alignment failed",
+            event_data={
+                "job_id": str(job.id),
+                "stage": ProcessingStage.ALIGNMENT.value,
+                "error_code": error.code,
+            },
+        )
+        await session.flush()
+        return job
+
+    payload = json.dumps(aligned, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    key = f"meetings/{meeting_id}/results/{result.id}/speaker-transcript.json"
+    await storage.put_object(
+        settings.minio_exports_bucket, key, io.BytesIO(payload), len(payload), "application/json"
+    )
+    try:
+        session.add(
+            ResultArtifact(
+                result=result,
+                artifact_type=ResultArtifactType.ALIGNED_TRANSCRIPT_JSON,
+                minio_bucket=settings.minio_exports_bucket,
+                minio_key=key,
+                content_type="application/json",
+                checksum_sha256=hashlib.sha256(payload).hexdigest(),
+                producer_job=job,
+            )
+        )
+        attempt.status = ProcessingAttemptStatus.SUCCEEDED
+        attempt.finished_at = datetime.now(timezone.utc)
+        cleaning_job = await queue_result_cleaning(session, result, settings, depends_on=job)
+        add_history_event(
+            session,
+            event_type="processing.succeeded",
+            description="Speaker alignment completed",
+            event_data={
+                "job_id": str(job.id),
+                "stage": ProcessingStage.ALIGNMENT.value,
+                "word_count": len(aligned.get("words") or []),
+            },
+        )
+        add_history_event(
+            session,
+            event_type="processing.queued",
+            description="Transcript cleaning queued after alignment",
+            event_data={"job_id": str(cleaning_job.id), "stage": ProcessingStage.CLEANING.value},
+        )
+        await session.flush()
+    except Exception:
+        try:
+            await storage.remove_object(settings.minio_exports_bucket, key)
+        except Exception:
+            pass
+        raise
     return job
 
 
@@ -284,24 +462,15 @@ async def queue_meeting_transcription(
     if not voices:
         raise ValueError("Meeting has no voice files")
 
-    model, integration = await ensure_transcription_registry(session, settings)
     jobs: list[ProcessingJob] = []
     for voice in voices:
         result = Result(voice=voice)
-        job = ProcessingJob(
-            result=result,
-            stage=ProcessingStage.TRANSCRIPTION,
-            model=model,
-            integration=integration,
-        )
-        attempt = ProcessingAttempt(
-            job=job,
-            attempt_number=1,
-            status=ProcessingAttemptStatus.QUEUED,
+        session.add(result)
+        transcription_job, _diarization_job = await _queue_transcription_and_diarization(
+            session, result, settings
         )
         voice.status = VoiceStatus.PENDING
-        session.add_all([result, job, attempt])
-        jobs.append(job)
+        jobs.append(transcription_job)
 
     await session.flush()
     return jobs
@@ -312,24 +481,19 @@ async def queue_voice_transcription(
     voice: VoiceFile,
     settings: Settings,
 ) -> ProcessingJob:
-    """Create the first transcription run for a newly uploaded voice."""
-    model, integration = await ensure_transcription_registry(session, settings)
+    """Create the first transcription and diarization run for a newly
+    uploaded voice. Returns the transcription job (the response shape
+    /meetings/{id}/process and upload callers already expect); the
+    diarization job is queued alongside it, independently.
+    """
     result = Result(voice=voice)
-    job = ProcessingJob(
-        result=result,
-        stage=ProcessingStage.TRANSCRIPTION,
-        model=model,
-        integration=integration,
-    )
-    attempt = ProcessingAttempt(
-        job=job,
-        attempt_number=1,
-        status=ProcessingAttemptStatus.QUEUED,
+    session.add(result)
+    transcription_job, _diarization_job = await _queue_transcription_and_diarization(
+        session, result, settings
     )
     voice.status = VoiceStatus.PENDING
-    session.add_all([result, job, attempt])
     await session.flush()
-    return job
+    return transcription_job
 
 
 async def load_processing_job(

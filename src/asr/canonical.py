@@ -30,6 +30,14 @@ def canonical_transcript(
                 "words": [],
             }
         )
+    words = [
+        {
+            "text": str(word.get("word") or ""),
+            "start_ms": _milliseconds(word.get("start")),
+            "end_ms": _milliseconds(word.get("end")),
+        }
+        for word in response.words
+    ]
     rtf = (
         inference_duration_seconds / audio_duration_seconds
         if audio_duration_seconds and audio_duration_seconds > 0
@@ -41,7 +49,7 @@ def canonical_transcript(
         "source_id": source_id,
         "model": model_name,
         "text": response.text,
-        "words": [],
+        "words": words,
         "segments": segments,
         "metrics": {
             "inference_duration_seconds": inference_duration_seconds,

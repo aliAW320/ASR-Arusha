@@ -30,7 +30,7 @@ from app.models import (
 )
 from app.observability.logging import configure_logging, get_logger
 from app.services.audit import add_history_event
-from app.services.processing import queue_result_diarization
+from app.services.processing import align_result_if_ready
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
 
@@ -231,12 +231,6 @@ class ASRWorker:
                 attempt.status = ProcessingAttemptStatus.SUCCEEDED
                 attempt.finished_at = now
                 attempt.external_request_id = external_request_id
-                diarization_job = await queue_result_diarization(
-                    session,
-                    result,
-                    self.settings,
-                    depends_on=job,
-                )
                 voice.status = VoiceStatus.PENDING
                 meeting = await session.get(Meeting, voice.meeting_id) if voice.meeting_id else None
                 add_history_event(
@@ -247,18 +241,6 @@ class ASRWorker:
                         "job_id": str(job.id),
                         "attempt_number": attempt.attempt_number,
                         "stage": job.stage.value,
-                    },
-                    affected_meetings=[meeting] if meeting else [],
-                    affected_voices=[voice],
-                )
-                add_history_event(
-                    session,
-                    event_type="processing.queued",
-                    description="Speaker diarization queued after transcription",
-                    event_data={
-                        "job_id": str(diarization_job.id),
-                        "stage": ProcessingStage.DIARIZATION.value,
-                        "depends_on_job_id": str(job.id),
                     },
                     affected_meetings=[meeting] if meeting else [],
                     affected_voices=[voice],
@@ -277,6 +259,27 @@ class ASRWorker:
                         object_key=object_key,
                     )
             raise
+
+        # Deliberately a separate transaction from the transcription success
+        # above: alignment either does nothing (diarization isn't done yet)
+        # or merges + queues cleaning, and neither outcome should be able to
+        # roll back the transcription result that just committed.
+        try:
+            async with self.session_factory() as session:
+                result = await session.get(Result, item.result_id)
+                if result is None:
+                    return
+                await align_result_if_ready(
+                    session, result, item.meeting_id, self.settings, self.storage
+                )
+                await session.commit()
+        except Exception as error:
+            logger.exception(
+                "alignment_trigger_failed",
+                "Speaker alignment trigger failed after transcription succeeded",
+                error=error,
+                result_id=str(item.result_id),
+            )
 
     async def _finish_failure(
         self,

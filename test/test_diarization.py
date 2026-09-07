@@ -11,17 +11,21 @@ from diarization.provider import (
 )
 
 
-def _transcript(segments):
+def _transcript(segments, words=None):
     return {
         "schema_version": "canonical-transcript/v1",
         "language": "fa",
         "source_id": "voice-1",
         "model": "whisper",
         "text": "سلام دنیا",
-        "words": [],
+        "words": words if words is not None else [],
         "segments": segments,
         "metrics": {},
     }
+
+
+def _word(text, start_ms, end_ms):
+    return {"text": text, "start_ms": start_ms, "end_ms": end_ms}
 
 
 def test_alignment_assigns_asr_segments_by_temporal_overlap():
@@ -202,3 +206,198 @@ async def test_diarization_bootstrap_propagates_download_failure():
 
     with pytest.raises(DiarizationError, match="download timed out"):
         await preload_model(Provider())
+
+
+# ---------------------------------------------------------------------------
+# Word-level alignment (used whenever the canonical transcript carries
+# word timestamps -- the primary path now that ASR requests them).
+# ---------------------------------------------------------------------------
+
+
+def _flat_words(aligned):
+    return [(w["text"], w["speaker_id"]) for w in aligned["words"]]
+
+
+def test_word_alignment_assigns_normal_overlap_to_the_containing_speaker():
+    aligned = align_transcript_to_speakers(
+        _transcript(
+            [{"id": "a", "text": "سلام دنیا", "start_ms": 0, "end_ms": 1000}],
+            words=[_word("سلام", 100, 400), _word("دنیا", 500, 900)],
+        ),
+        [DiarizationTurn(0, 1000, "SPEAKER_00")],
+        diarization_model="model",
+    )
+    assert aligned["schema_version"] == "speaker-transcript/v1"
+    assert _flat_words(aligned) == [("سلام", "SPEAKER_00"), ("دنیا", "SPEAKER_00")]
+    assert len(aligned["words"]) == 2  # no word lost
+
+
+def test_word_alignment_prefers_the_speaker_with_greatest_overlap_when_a_word_spans_two_turns():
+    # Word [900, 1300) overlaps SPEAKER_00 for 100ms and SPEAKER_01 for 300ms.
+    aligned = align_transcript_to_speakers(
+        _transcript(
+            [{"id": "a", "text": "میان‌مرزی", "start_ms": 900, "end_ms": 1300}],
+            words=[_word("میان‌مرزی", 900, 1300)],
+        ),
+        [
+            DiarizationTurn(0, 1000, "SPEAKER_00"),
+            DiarizationTurn(1000, 2000, "SPEAKER_01"),
+        ],
+        diarization_model="model",
+    )
+    assert aligned["words"][0]["speaker_id"] == "SPEAKER_01"
+
+
+def test_word_alignment_assigns_a_word_in_a_gap_to_the_nearest_interval():
+    aligned = align_transcript_to_speakers(
+        _transcript(
+            [{"id": "a", "text": "خلا", "start_ms": 1050, "end_ms": 1100}],
+            words=[_word("خلا", 1050, 1100)],
+        ),
+        [
+            DiarizationTurn(0, 1000, "SPEAKER_00"),
+            DiarizationTurn(1400, 2000, "SPEAKER_01"),
+        ],
+        diarization_model="model",
+    )
+    # 50ms from SPEAKER_00's end vs 300ms from SPEAKER_01's start.
+    assert aligned["words"][0]["speaker_id"] == "SPEAKER_00"
+
+
+def test_word_alignment_fills_null_timestamps_from_neighboring_words():
+    aligned = align_transcript_to_speakers(
+        _transcript(
+            [{"id": "a", "text": "سلام ؟؟؟ دنیا", "start_ms": 0, "end_ms": 1900}],
+            words=[
+                _word("سلام", 0, 400),
+                _word("؟؟؟", None, None),
+                _word("دنیا", 1500, 1900),
+            ],
+        ),
+        [
+            DiarizationTurn(0, 1000, "SPEAKER_00"),
+            DiarizationTurn(1000, 2000, "SPEAKER_01"),
+        ],
+        diarization_model="model",
+    )
+    assert len(aligned["words"]) == 3  # the untimed word is never dropped
+    assert aligned["words"][1]["text"] == "؟؟؟"
+    assert aligned["words"][1]["speaker_id"] in ("SPEAKER_00", "SPEAKER_01")
+    assert aligned["words"][1]["start_ms"] is None
+    assert aligned["words"][1]["end_ms"] is None
+
+
+def test_word_alignment_handles_a_transcript_with_only_missing_timestamps():
+    aligned = align_transcript_to_speakers(
+        _transcript(
+            [{"id": "a", "text": "ناشناخته", "start_ms": None, "end_ms": None}],
+            words=[_word("ناشناخته", None, None)],
+        ),
+        [DiarizationTurn(0, 1000, "SPEAKER_00")],
+        diarization_model="model",
+    )
+    # Still never dropped -- falls back to the only available speaker interval.
+    assert len(aligned["words"]) == 1
+    assert aligned["words"][0]["speaker_id"] == "SPEAKER_00"
+
+
+def test_word_alignment_groups_consecutive_same_speaker_words_into_one_turn():
+    aligned = align_transcript_to_speakers(
+        _transcript(
+            [{"id": "a", "text": "سلام دوست من", "start_ms": 0, "end_ms": 1500}],
+            words=[
+                _word("سلام", 0, 300),
+                _word("دوست", 400, 700),
+                _word("من", 800, 1100),
+            ],
+        ),
+        [DiarizationTurn(0, 2000, "SPEAKER_00")],
+        diarization_model="model",
+    )
+    assert len(aligned["segments"]) == 1
+    turn = aligned["segments"][0]
+    assert turn["speaker_id"] == "SPEAKER_00"
+    assert turn["start_ms"] == 0
+    assert turn["end_ms"] == 1100
+    assert turn["text"] == "سلام دوست من"
+    assert [w["text"] for w in turn["words"]] == ["سلام", "دوست", "من"]
+
+
+def test_word_alignment_starts_a_new_turn_on_speaker_change():
+    aligned = align_transcript_to_speakers(
+        _transcript(
+            [{"id": "a", "text": "سلام خداحافظ", "start_ms": 0, "end_ms": 1500}],
+            words=[_word("سلام", 100, 400), _word("خداحافظ", 1100, 1400)],
+        ),
+        [
+            DiarizationTurn(0, 1000, "SPEAKER_00"),
+            DiarizationTurn(1000, 2000, "SPEAKER_01"),
+        ],
+        diarization_model="model",
+    )
+    assert len(aligned["segments"]) == 2
+    assert [segment["speaker_id"] for segment in aligned["segments"]] == [
+        "SPEAKER_00",
+        "SPEAKER_01",
+    ]
+    assert [segment["text"] for segment in aligned["segments"]] == ["سلام", "خداحافظ"]
+
+
+def test_word_alignment_handles_overlapping_speaker_turns_cross_talk():
+    # Two speakers talk over each other; a word landing in the overlap should
+    # deterministically resolve to the speaker with more total overlap.
+    aligned = align_transcript_to_speakers(
+        _transcript(
+            [{"id": "a", "text": "قطع", "start_ms": 400, "end_ms": 900}],
+            words=[_word("قطع", 400, 900)],
+        ),
+        [
+            DiarizationTurn(0, 800, "SPEAKER_00"),
+            DiarizationTurn(300, 1000, "SPEAKER_01"),
+        ],
+        diarization_model="model",
+    )
+    # Overlap with SPEAKER_00: [400,800) = 400ms. Overlap with SPEAKER_01: [400,900) = 500ms.
+    assert aligned["words"][0]["speaker_id"] == "SPEAKER_01"
+
+
+def test_word_alignment_handles_very_short_diarization_and_word_intervals():
+    aligned = align_transcript_to_speakers(
+        _transcript(
+            [{"id": "a", "text": "خ", "start_ms": 500, "end_ms": 501}],
+            words=[_word("خ", 500, 501)],
+        ),
+        [
+            DiarizationTurn(0, 500, "SPEAKER_00"),
+            DiarizationTurn(500, 501, "SPEAKER_01"),
+            DiarizationTurn(501, 1000, "SPEAKER_00"),
+        ],
+        diarization_model="model",
+    )
+    assert len(aligned["words"]) == 1
+    assert aligned["words"][0]["speaker_id"] == "SPEAKER_01"
+
+
+def test_word_alignment_never_drops_words_across_a_realistic_multi_turn_transcript():
+    words = [
+        _word("سلام", 0, 300),
+        _word("دوست", 400, 700),
+        _word("خوبی", 800, 1100),
+        _word("؟", None, None),
+        _word("بله", 1600, 1900),
+        _word("ممنون", 2000, 2300),
+    ]
+    aligned = align_transcript_to_speakers(
+        _transcript(
+            [{"id": "a", "text": "سلام دوست خوبی؟ بله ممنون", "start_ms": 0, "end_ms": 2300}],
+            words=words,
+        ),
+        [
+            DiarizationTurn(0, 1200, "SPEAKER_00"),
+            DiarizationTurn(1500, 2400, "SPEAKER_01"),
+        ],
+        diarization_model="model",
+    )
+    assert len(aligned["words"]) == len(words)
+    assert [w["text"] for w in aligned["words"]] == [w["text"] for w in words]
+    assert sum(len(segment["words"]) for segment in aligned["segments"]) == len(words)

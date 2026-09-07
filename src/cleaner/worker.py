@@ -32,6 +32,7 @@ from app.messaging.consumer import consume_attempt_queue
 from app.messaging.outbox import enqueue_attempt, enqueue_mcp
 from app.messaging.topology import QueueNames
 from app.services.audit import add_history_event
+from app.services.cancellation import ProcessingCancelled, run_cancellable
 from app.services.processing import queue_meeting_composition_if_ready
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
@@ -206,8 +207,14 @@ class CleanerWorker:
                 job = await session.get(ProcessingJob, item.job_id)
                 result = await session.get(Result, item.result_id)
                 voice = await session.get(VoiceFile, item.voice_id)
-                if attempt is None or job is None or result is None or voice is None:
-                    raise RuntimeError("Cleaner job state disappeared before completion")
+                if (
+                    attempt is None
+                    or job is None
+                    or result is None
+                    or voice is None
+                    or attempt.status == ProcessingAttemptStatus.CANCELLED
+                ):
+                    raise ProcessingCancelled("Cleaner job was cancelled before completion")
                 session.add(
                     ResultArtifact(
                         result=result,
@@ -387,7 +394,14 @@ class CleanerWorker:
             cleaned_chunks = []
             request_ids = []
             for chunk in chunks:
-                response = await provider.clean(chunk.segments, model=item.model_name)
+                response = await run_cancellable(
+                    provider.clean(chunk.segments, model=item.model_name),
+                    session_factory=self.session_factory,
+                    attempt_id=item.attempt_id,
+                    poll_interval_seconds=(
+                        self.settings.processing_cancellation_poll_interval_seconds
+                    ),
+                )
                 cleaned_chunks.append((chunk, response.segments))
                 if response.external_request_id:
                     request_ids.append(response.external_request_id)
@@ -420,6 +434,13 @@ class CleanerWorker:
                 attempt_number=item.attempt_number,
                 chunk_count=len(chunks),
                 duration_seconds=time.monotonic() - started,
+            )
+        except ProcessingCancelled:
+            logger.info(
+                "cleaner_processing_cancelled",
+                "Transcript cleaning cancelled",
+                job_id=str(item.job_id),
+                voice_id=str(item.voice_id),
             )
         except CleanerError as error:
             await self._finish_failure(

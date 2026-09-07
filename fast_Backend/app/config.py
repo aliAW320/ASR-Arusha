@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     rabbitmq_cleaning_queue: str = "cleaning.queue"
     rabbitmq_mcp_queue: str = "mcp.queue"
     rabbitmq_dead_letter_queue: str = "processing.dlq"
+    processing_cancellation_poll_interval_seconds: float = Field(
+        default=0.5, gt=0, le=10
+    )
 
     base_url: str = "https://llm.irdc.arusha.ir/v1"
     transcript_api_key: SecretStr | None = None

@@ -33,6 +33,7 @@ from app.messaging.consumer import consume_attempt_queue
 from app.messaging.outbox import enqueue_attempt
 from app.messaging.topology import QueueNames
 from app.services.audit import add_history_event
+from app.services.cancellation import ProcessingCancelled, run_cancellable
 from app.services.processing import align_result_if_ready
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
@@ -219,8 +220,14 @@ class ASRWorker:
                 job = await session.get(ProcessingJob, item.job_id)
                 result = await session.get(Result, item.result_id)
                 voice = await session.get(VoiceFile, item.voice_id)
-                if attempt is None or job is None or result is None or voice is None:
-                    raise RuntimeError("ASR job state disappeared before completion")
+                if (
+                    attempt is None
+                    or job is None
+                    or result is None
+                    or voice is None
+                    or attempt.status == ProcessingAttemptStatus.CANCELLED
+                ):
+                    raise ProcessingCancelled("ASR job was cancelled before completion")
                 for artifact_type, object_key, payload, content_type in uploads:
                     session.add(
                         ResultArtifact(
@@ -359,11 +366,18 @@ class ASRWorker:
                     item.source_key,
                     audio,
                 )
-                response = await provider.transcribe(
-                    audio,
-                    filename=item.filename,
-                    content_type=item.content_type,
-                    model=item.model_name,
+                response = await run_cancellable(
+                    provider.transcribe(
+                        audio,
+                        filename=item.filename,
+                        content_type=item.content_type,
+                        model=item.model_name,
+                    ),
+                    session_factory=self.session_factory,
+                    attempt_id=item.attempt_id,
+                    poll_interval_seconds=(
+                        self.settings.processing_cancellation_poll_interval_seconds
+                    ),
                 )
             elapsed = time.monotonic() - started
             canonical = canonical_transcript(
@@ -389,6 +403,13 @@ class ASRWorker:
                 voice_id=str(item.voice_id),
                 attempt_number=item.attempt_number,
                 inference_duration_seconds=elapsed,
+            )
+        except ProcessingCancelled:
+            logger.info(
+                "asr_processing_cancelled",
+                "ASR transcription cancelled",
+                job_id=str(item.job_id),
+                voice_id=str(item.voice_id),
             )
         except TranscriptionError as error:
             await self._finish_failure(

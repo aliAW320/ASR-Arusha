@@ -4,7 +4,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -13,7 +13,9 @@ from alignment.types import DiarizationError, DiarizationTurn
 from meeting_composer.composer import FINGERPRINT_POLICY_VERSION, compute_offsets, compute_source_fingerprint
 
 from ..config import Settings
+from ..messaging.outbox import enqueue_attempt
 from ..models import (
+    BrokerOutboxMessage,
     ExternalIntegration,
     ExternalIntegrationKind,
     Meeting,
@@ -36,7 +38,6 @@ from ..models import (
 from ..schemas import ProcessingJobResponse
 from ..storage.base import ObjectStorage
 from .audit import add_history_event
-from ..messaging.outbox import enqueue_attempt
 
 
 class MeetingCompositionError(ValueError):
@@ -49,6 +50,64 @@ class MeetingCompositionError(ValueError):
     def __init__(self, message: str, *, code: str):
         super().__init__(message)
         self.code = code
+
+
+async def cancel_voice_processing(
+    session: AsyncSession,
+    voice_id: uuid.UUID,
+) -> int:
+    """Cancel active jobs and remove unpublished work for a deleted voice."""
+    result_ids = list(
+        await session.scalars(select(Result.id).where(Result.voice_id == voice_id))
+    )
+    if not result_ids:
+        return 0
+
+    voice_attempts = list(
+        await session.scalars(
+            select(ProcessingAttempt)
+            .join(ProcessingAttempt.job)
+            .where(ProcessingJob.result_id.in_(result_ids))
+            .with_for_update()
+        )
+    )
+    meeting_attempts = list(
+        await session.scalars(
+            select(ProcessingAttempt)
+            .join(ProcessingAttempt.job)
+            .join(
+                MeetingResultSource,
+                MeetingResultSource.meeting_result_id
+                == ProcessingJob.meeting_result_id,
+            )
+            .where(MeetingResultSource.result_id.in_(result_ids))
+            .with_for_update()
+        )
+    )
+    attempts = {attempt.id: attempt for attempt in (*voice_attempts, *meeting_attempts)}
+    cancelled = 0
+    now = datetime.now(timezone.utc)
+    for attempt in attempts.values():
+        if attempt.status in {
+            ProcessingAttemptStatus.QUEUED,
+            ProcessingAttemptStatus.RUNNING,
+        }:
+            attempt.status = ProcessingAttemptStatus.CANCELLED
+            attempt.finished_at = now
+            attempt.error_code = "voice_deleted"
+            attempt.error_message = (
+                "Processing cancelled because the source voice was deleted"
+            )
+            cancelled += 1
+
+    deduplication_keys = [f"attempt:{attempt_id}" for attempt_id in attempts]
+    deduplication_keys.extend(f"mcp:result:{result_id}" for result_id in result_ids)
+    await session.execute(
+        delete(BrokerOutboxMessage).where(
+            BrokerOutboxMessage.deduplication_key.in_(deduplication_keys)
+        )
+    )
+    return cancelled
 
 
 JOB_LOAD_OPTIONS = (

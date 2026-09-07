@@ -35,6 +35,7 @@ from app.messaging.consumer import consume_attempt_queue
 from app.messaging.outbox import enqueue_attempt
 from app.messaging.topology import QueueNames
 from app.services.audit import add_history_event
+from app.services.cancellation import ProcessingCancelled, run_cancellable
 from app.services.processing import align_result_if_ready
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
@@ -192,8 +193,16 @@ class DiarizationWorker:
                 job = await session.get(ProcessingJob, item.job_id)
                 result = await session.get(Result, item.result_id)
                 voice = await session.get(VoiceFile, item.voice_id)
-                if attempt is None or job is None or result is None or voice is None:
-                    raise RuntimeError("Diarization job state disappeared before completion")
+                if (
+                    attempt is None
+                    or job is None
+                    or result is None
+                    or voice is None
+                    or attempt.status == ProcessingAttemptStatus.CANCELLED
+                ):
+                    raise ProcessingCancelled(
+                        "Diarization job was cancelled before completion"
+                    )
                 session.add(
                     ResultArtifact(
                         result=result,
@@ -334,7 +343,14 @@ class DiarizationWorker:
                 audio_path = Path(temp_dir) / Path(item.filename).name
                 with audio_path.open("w+b") as audio:
                     await self.storage.download_object(item.source_bucket, item.source_key, audio)
-                turns = await provider.diarize(audio_path)
+                turns = await run_cancellable(
+                    provider.diarize(audio_path),
+                    session_factory=self.session_factory,
+                    attempt_id=item.attempt_id,
+                    poll_interval_seconds=(
+                        self.settings.processing_cancellation_poll_interval_seconds
+                    ),
+                )
             await self._finish_success(item, turns)
             logger.info(
                 "diarization_processing_succeeded",
@@ -343,6 +359,13 @@ class DiarizationWorker:
                 voice_id=str(item.voice_id),
                 attempt_number=item.attempt_number,
                 inference_duration_seconds=time.monotonic() - started,
+            )
+        except ProcessingCancelled:
+            logger.info(
+                "diarization_processing_cancelled",
+                "Speaker diarization cancelled",
+                job_id=str(item.job_id),
+                voice_id=str(item.voice_id),
             )
         except DiarizationError as error:
             await self._finish_failure(

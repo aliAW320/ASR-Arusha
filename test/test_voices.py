@@ -1,3 +1,4 @@
+import asyncio
 import io
 import uuid
 
@@ -5,6 +6,8 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
+import app.services.cancellation as cancellation_service
+from app.config import get_settings
 from app.database import get_db_session
 from app.main import app
 from app.models import (
@@ -12,9 +15,13 @@ from app.models import (
     History,
     ProcessingAttempt,
     ProcessingJob,
+    Result,
+    ResultArtifact,
     VoiceFile,
     VoiceStatus,
 )
+from app.services.cancellation import attempt_is_cancelled
+from asr.worker import ASRWorker
 from conftest import authorization, register_user
 
 
@@ -161,3 +168,113 @@ async def test_failed_metadata_write_retries_three_times_and_cleans_minio(
     assert failing.commit_attempts == 3
     assert len(client.storage.removed) == 1
     assert client.storage.objects == {}
+
+
+@pytest.mark.asyncio
+async def test_deleting_voice_cancels_queued_work_and_removes_outbox(
+    client, session_factory
+):
+    owner = await register_user(client, "delete-queued@example.com")
+    meeting = (
+        await client.post(
+            "/meetings", headers=authorization(owner), json={"title": "Delete queued"}
+        )
+    ).json()
+    uploaded = await client.post(
+        f"/meetings/{meeting['id']}/voices",
+        headers=authorization(owner),
+        files={"upload": ("queued.wav", b"RIFF-audio", "audio/wav")},
+    )
+    voice_id = uuid.UUID(uploaded.json()["id"])
+    async with session_factory() as session:
+        attempt_id = await session.scalar(select(ProcessingAttempt.id))
+
+    removed = await client.delete(
+        f"/voices/{voice_id}", headers=authorization(owner)
+    )
+
+    assert removed.status_code == 204, removed.text
+    async with session_factory() as session:
+        assert await session.get(VoiceFile, voice_id) is None
+        assert await session.scalar(select(ProcessingJob.id)) is None
+        assert await session.scalar(select(ProcessingAttempt.id)) is None
+        assert await session.scalar(select(BrokerOutboxMessage.id)) is None
+        event = await session.scalar(
+            select(History).where(History.event_type == "voice.deleted")
+        )
+        assert event.event_data["cancelled_processing_attempts"] == 2
+        cancellation_event = await session.scalar(
+            select(History).where(History.event_type == "processing.cancelled")
+        )
+        assert cancellation_event.event_data == {
+            "voice_id": str(voice_id),
+            "reason": "voice_deleted",
+            "cancelled_attempts": 2,
+        }
+    assert await attempt_is_cancelled(session_factory, attempt_id) is True
+
+
+class BlockingTranscriptionProvider:
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def transcribe(self, *_args, **_kwargs):
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+
+
+@pytest.mark.asyncio
+async def test_deleting_voice_cancels_active_asr_without_persisting_output(
+    client, session_factory, monkeypatch
+):
+    owner = await register_user(client, "delete-running@example.com")
+    meeting = (
+        await client.post(
+            "/meetings", headers=authorization(owner), json={"title": "Delete running"}
+        )
+    ).json()
+    uploaded = await client.post(
+        f"/meetings/{meeting['id']}/voices",
+        headers=authorization(owner),
+        files={"upload": ("running.wav", b"RIFF-audio", "audio/wav")},
+    )
+    voice_id = uuid.UUID(uploaded.json()["id"])
+    provider = BlockingTranscriptionProvider()
+    deletion_committed = asyncio.Event()
+
+    async def cancelled_after_delete(_session_factory, _attempt_id):
+        return deletion_committed.is_set()
+
+    monkeypatch.setattr(
+        cancellation_service, "attempt_is_cancelled", cancelled_after_delete
+    )
+    settings = get_settings().model_copy(
+        update={"processing_cancellation_poll_interval_seconds": 0.01}
+    )
+    worker = ASRWorker(
+        session_factory=session_factory,
+        storage=client.storage,
+        settings=settings,
+        provider_factory=lambda _: provider,
+    )
+    running = asyncio.create_task(worker.run_once())
+    await asyncio.wait_for(provider.started.wait(), timeout=1)
+
+    removed = await client.delete(
+        f"/voices/{voice_id}", headers=authorization(owner)
+    )
+    assert removed.status_code == 204, removed.text
+    deletion_committed.set()
+    assert await asyncio.wait_for(running, timeout=2) is True
+    assert provider.cancelled.is_set()
+
+    async with session_factory() as session:
+        assert await session.get(VoiceFile, voice_id) is None
+        assert await session.scalar(select(Result.id)) is None
+        assert await session.scalar(select(ResultArtifact.id)) is None
+        assert await session.scalar(select(BrokerOutboxMessage.id)) is None

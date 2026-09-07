@@ -171,6 +171,8 @@ History یک audit trail تجاری جدا از log عملیاتی است، ول
 
 ACK بعد از ثبت پایدار نتیجه در PostgreSQL و MinIO ارسال می‌شود. خطاهای موقت با Attempt جدید، حداکثر سه بار و با تأخیر قابل تنظیم retry می‌شوند؛ خطای نهایی با `reject(requeue=false)` به `processing.dlq` می‌رود و جزئیات آن در ProcessingAttempt و History برای API/UI باقی می‌ماند. تحویل تکراری با وضعیت Attempt و کلید یکتای outbox idempotent شده است.
 
+حذف Voice از UI، Attemptهای `queued` و `running` وابسته را لغو و پیام‌های منتشرنشدهٔ outbox را حذف می‌کند. workerهای فعال PostgreSQL را برای cancellation بررسی می‌کنند و نتیجهٔ کار لغوشده را ذخیره یا وارد مرحلهٔ بعد نمی‌کنند. پیام RabbitMQ که قبلاً publish شده است قابل حذف انتخابی نیست؛ هنگام تحویل به‌عنوان پیام stale بدون اجرای کار ACK می‌شود.
+
 تنظیمات لازم در `.env`:
 
 ```text

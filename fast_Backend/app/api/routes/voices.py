@@ -23,7 +23,7 @@ from ...services.permissions import (
     is_admin,
     require_meeting_permission,
 )
-from ...services.processing import queue_voice_transcription
+from ...services.processing import cancel_voice_processing, queue_voice_transcription
 from ...storage.base import ObjectStorage
 from ...storage.minio import get_object_storage
 
@@ -278,6 +278,23 @@ async def delete_voice(
     elif not is_admin(current_user):
         raise HTTPException(status_code=403, detail="Insufficient permission")
 
+    cancelled_attempts = await cancel_voice_processing(session, voice.id)
+    if cancelled_attempts:
+        add_history_event(
+            session,
+            event_type="processing.cancelled",
+            description="Voice processing cancelled before deletion",
+            actor=current_user,
+            request=request,
+            event_data={
+                "voice_id": str(voice.id),
+                "reason": "voice_deleted",
+                "cancelled_attempts": cancelled_attempts,
+            },
+            affected_meetings=[meeting] if meeting else [],
+            affected_voices=[voice],
+        )
+
     try:
         await storage.remove_object(voice.minio_bucket, voice.minio_key)
     except Exception as error:
@@ -301,6 +318,7 @@ async def delete_voice(
             "filename": voice.original_filename,
             "minio_bucket": voice.minio_bucket,
             "minio_key": voice.minio_key,
+            "cancelled_processing_attempts": cancelled_attempts,
         },
         affected_meetings=[meeting] if meeting else [],
     )

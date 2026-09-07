@@ -29,6 +29,7 @@ from app.models import (
 )
 from app.observability.logging import configure_logging, get_logger
 from app.services.audit import add_history_event
+from app.services.cancellation import ProcessingCancelled, attempt_is_cancelled
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
 
@@ -215,9 +216,14 @@ class MeetingComposerWorker:
                 job = await session.get(ProcessingJob, item.job_id)
                 meeting_result = await session.get(MeetingResult, item.meeting_result_id)
                 meeting = await session.get(Meeting, item.meeting_id)
-                if attempt is None or job is None or meeting_result is None:
-                    raise RuntimeError(
-                        "Meeting composer job state disappeared before completion"
+                if (
+                    attempt is None
+                    or job is None
+                    or meeting_result is None
+                    or attempt.status == ProcessingAttemptStatus.CANCELLED
+                ):
+                    raise ProcessingCancelled(
+                        "Meeting composition was cancelled before completion"
                     )
                 artifact = MeetingResultArtifact(
                     meeting_result=meeting_result,
@@ -325,6 +331,8 @@ class MeetingComposerWorker:
             composer_sources: list[SourceInput] = []
             total_bytes = 0
             for source in item.sources:
+                if await attempt_is_cancelled(self.session_factory, item.attempt_id):
+                    raise ProcessingCancelled("Meeting composition was cancelled")
                 buffer = io.BytesIO()
                 await self.storage.download_object(
                     source.artifact_bucket, source.artifact_key, buffer
@@ -380,6 +388,13 @@ class MeetingComposerWorker:
                 meeting_id=str(item.meeting_id),
                 source_count=len(item.sources),
                 duration_seconds=time.monotonic() - started,
+            )
+        except ProcessingCancelled:
+            logger.info(
+                "meeting_composition_cancelled",
+                "Meeting composition cancelled because a source voice was deleted",
+                job_id=str(item.job_id),
+                meeting_id=str(item.meeting_id),
             )
         except ComposerError as error:
             await self._finish_failure(

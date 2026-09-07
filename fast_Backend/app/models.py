@@ -1450,6 +1450,38 @@ class ProcessingAttempt(Base):
     job: Mapped[ProcessingJob] = relationship(back_populates="attempts")
 
 
+class BrokerOutboxMessage(Base):
+    """A durable, transactional request to publish one RabbitMQ message."""
+
+    __tablename__ = "broker_outbox_messages"
+    __table_args__ = (
+        CheckConstraint(
+            "publish_attempts >= 0",
+            name="ck_broker_outbox_publish_attempts_non_negative",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    queue_name: Mapped[str] = mapped_column(String(150), nullable=False, index=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    deduplication_key: Mapped[str] = mapped_column(
+        String(255), nullable=False, unique=True, index=True
+    )
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    publish_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # ---------------------------------------------------------------------------
 # History / audit trail
 # ---------------------------------------------------------------------------

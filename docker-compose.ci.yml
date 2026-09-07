@@ -11,3 +11,6 @@ services:
 
   minio:
     restart: "no"
+
+  rabbitmq:
+    restart: "no"

@@ -36,6 +36,7 @@ from ..models import (
 from ..schemas import ProcessingJobResponse
 from ..storage.base import ObjectStorage
 from .audit import add_history_event
+from ..messaging.outbox import enqueue_attempt
 
 
 class MeetingCompositionError(ValueError):
@@ -223,6 +224,7 @@ async def queue_result_cleaning(
     )
     session.add_all([job, attempt])
     await session.flush()
+    enqueue_attempt(session, attempt, ProcessingStage.CLEANING, settings)
     return job
 
 
@@ -252,14 +254,12 @@ async def _queue_transcription_and_diarization(
         model=transcription_model,
         integration=integration,
     )
-    session.add_all(
-        [
-            transcription_job,
-            ProcessingAttempt(
-                job=transcription_job, attempt_number=1, status=ProcessingAttemptStatus.QUEUED
-            ),
-        ]
+    transcription_attempt = ProcessingAttempt(
+        job=transcription_job,
+        attempt_number=1,
+        status=ProcessingAttemptStatus.QUEUED,
     )
+    session.add_all([transcription_job, transcription_attempt])
 
     diarization_model = await ensure_diarization_registry(session, settings)
     diarization_job = ProcessingJob(
@@ -267,16 +267,20 @@ async def _queue_transcription_and_diarization(
         stage=ProcessingStage.DIARIZATION,
         model=diarization_model,
     )
-    session.add_all(
-        [
-            diarization_job,
-            ProcessingAttempt(
-                job=diarization_job, attempt_number=1, status=ProcessingAttemptStatus.QUEUED
-            ),
-        ]
+    diarization_attempt = ProcessingAttempt(
+        job=diarization_job,
+        attempt_number=1,
+        status=ProcessingAttemptStatus.QUEUED,
     )
+    session.add_all([diarization_job, diarization_attempt])
 
     await session.flush()
+    enqueue_attempt(
+        session, transcription_attempt, ProcessingStage.TRANSCRIPTION, settings
+    )
+    enqueue_attempt(
+        session, diarization_attempt, ProcessingStage.DIARIZATION, settings
+    )
     return transcription_job, diarization_job
 
 

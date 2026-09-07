@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Persian meeting audio processing backend"
 requires-python = ">=3.11,<3.12"
 dependencies = [
+    "aio-pika>=10.0.1,<11",
     "alembic>=1.19.1",
     "asyncpg>=0.31.0",
     "email-validator>=2.3.0",

@@ -28,6 +28,9 @@ from app.models import (
     VoiceStatus,
 )
 from app.observability.logging import configure_logging, get_logger
+from app.messaging.consumer import consume_attempt_queue
+from app.messaging.outbox import enqueue_attempt, enqueue_mcp
+from app.messaging.topology import QueueNames
 from app.services.audit import add_history_event
 from app.services.processing import queue_meeting_composition_if_ready
 from app.storage.base import ObjectStorage
@@ -86,9 +89,9 @@ class CleanerWorker:
             temperature=self.settings.cleaner_temperature,
         )
 
-    async def claim_next(self) -> uuid.UUID | None:
+    async def claim_next(self, attempt_id: uuid.UUID | None = None) -> uuid.UUID | None:
         async with self.session_factory() as session:
-            attempt = await session.scalar(
+            statement = (
                 select(ProcessingAttempt)
                 .join(ProcessingAttempt.job)
                 .options(
@@ -104,6 +107,9 @@ class CleanerWorker:
                 .with_for_update(skip_locked=True, of=ProcessingAttempt)
                 .limit(1)
             )
+            if attempt_id is not None:
+                statement = statement.where(ProcessingAttempt.id == attempt_id)
+            attempt = await session.scalar(statement)
             if attempt is None:
                 return None
             attempt.status = ProcessingAttemptStatus.RUNNING
@@ -219,6 +225,15 @@ class CleanerWorker:
                 attempt.finished_at = now
                 result.completed_at = now
                 voice.status = VoiceStatus.FINISHED
+                enqueue_mcp(
+                    session,
+                    self.settings,
+                    meeting_id=item.meeting_id,
+                    voice_id=item.voice_id,
+                    result_id=item.result_id,
+                    artifact_bucket=self.settings.minio_exports_bucket,
+                    artifact_key=key,
+                )
                 meeting = await session.get(Meeting, voice.meeting_id) if voice.meeting_id else None
                 add_history_event(
                     session,
@@ -308,12 +323,19 @@ class CleanerWorker:
                 and attempt.attempt_number < self.settings.cleaner_max_attempts
             )
             if will_retry:
-                session.add(
-                    ProcessingAttempt(
-                        job=job,
-                        attempt_number=attempt.attempt_number + 1,
-                        status=ProcessingAttemptStatus.QUEUED,
-                    )
+                retry_attempt = ProcessingAttempt(
+                    job=job,
+                    attempt_number=attempt.attempt_number + 1,
+                    status=ProcessingAttemptStatus.QUEUED,
+                )
+                session.add(retry_attempt)
+                await session.flush()
+                enqueue_attempt(
+                    session,
+                    retry_attempt,
+                    ProcessingStage.CLEANING,
+                    self.settings,
+                    retry=True,
                 )
             else:
                 voice.status = VoiceStatus.ERROR
@@ -339,8 +361,8 @@ class CleanerWorker:
             )
             await session.commit()
 
-    async def run_once(self) -> bool:
-        attempt_id = await self.claim_next()
+    async def run_once(self, requested_attempt_id: uuid.UUID | None = None) -> bool:
+        attempt_id = await self.claim_next(requested_attempt_id)
         if attempt_id is None:
             return False
         item = await self._load_work_item(attempt_id)
@@ -447,18 +469,12 @@ async def run_forever() -> None:
         model=settings.cleaner_model_name,
     )
     try:
-        while True:
-            try:
-                worked = await worker.run_once()
-            except Exception as error:
-                logger.exception(
-                    "cleaner_worker_iteration_failed",
-                    "Cleaner worker iteration failed",
-                    error=error,
-                )
-                worked = False
-            if not worked:
-                await asyncio.sleep(settings.cleaner_poll_interval_seconds)
+        await consume_attempt_queue(
+            settings=settings,
+            queue_name=QueueNames.from_settings(settings).cleaning,
+            session_factory=SessionFactory,
+            handler=worker.run_once,
+        )
     finally:
         await close_database()
 

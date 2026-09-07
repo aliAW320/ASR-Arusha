@@ -112,6 +112,23 @@ def test_meeting_composer_is_an_isolated_cpu_only_worker():
     assert "pyannote" not in dockerfile.lower()
 
 
+def test_rabbitmq_topology_and_dispatcher_are_part_of_compose_and_ci():
+    compose = (PROJECT_ROOT / "docker-compose.yml").read_text()
+    dockerfile = (PROJECT_ROOT / "Docker" / "broker-dispatcher.Dockerfile").read_text()
+    workflow = (PROJECT_ROOT / ".github" / "workflows" / "ci-cd.yml").read_text()
+    environment = (PROJECT_ROOT / ".env.example").read_text()
+    project = (PROJECT_ROOT / "pyproject.toml").read_text()
+
+    assert "rabbitmq:4.1-management-alpine" in compose
+    assert "rabbitmq_data:/var/lib/rabbitmq" in compose
+    assert "dockerfile: Docker/broker-dispatcher.Dockerfile" in compose
+    assert 'python", "-m", "app.messaging.dispatcher"' in dockerfile
+    assert "dockerfile: Docker/broker-dispatcher.Dockerfile" in workflow
+    assert "aio-pika" in project
+    for queue_name in ("asr.queue", "diar.queue", "cleaning.queue", "mcp.queue"):
+        assert queue_name in environment
+
+
 def test_every_image_that_imports_app_services_processing_ships_its_dependencies():
     # app/services/processing.py imports meeting_composer.composer (shared
     # fingerprint/offset algorithm) and alignment.merge/alignment.types

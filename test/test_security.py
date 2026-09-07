@@ -11,7 +11,9 @@ from conftest import authorization, register_user
 async def test_protected_routes_reject_missing_malformed_and_tampered_tokens(client):
     registered = await register_user(client, "token-check@example.com")
     token = registered["access_token"]
-    tampered = f"{token[:-1]}{'a' if token[-1] != 'a' else 'b'}"
+    header, payload, signature = token.split(".")
+    tampered_signature = f"{'a' if signature[0] != 'a' else 'b'}{signature[1:]}"
+    tampered = f"{header}.{payload}.{tampered_signature}"
 
     for headers in (
         {},

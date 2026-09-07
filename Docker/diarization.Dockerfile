@@ -19,6 +19,7 @@ RUN uv pip install \
     --requirement Docker/diarization.requirements.lock
 
 COPY fast_Backend/app ./app
+COPY src/alignment ./alignment
 COPY src/diarization ./diarization
 COPY src/meeting_composer ./meeting_composer
 

@@ -11,6 +11,7 @@ RUN uv sync --locked --no-dev
 
 COPY fast_Backend/app ./app
 COPY src/cleaner ./cleaner
+COPY src/alignment ./alignment
 COPY src/meeting_composer ./meeting_composer
 
 CMD ["uv", "run", "--locked", "--no-dev", "python", "-m", "cleaner.worker"]

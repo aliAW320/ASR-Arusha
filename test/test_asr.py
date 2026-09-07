@@ -44,6 +44,8 @@ def test_canonical_transcript_preserves_segment_timeline_and_metrics_without_wor
     assert payload["segments"][0]["start_ms"] == 500
     assert payload["segments"][0]["end_ms"] == 1750
     assert payload["segments"][0]["words"] == []
+    # Segment-level "words" stays empty (unused since alignment now works from
+    # the top-level word list); the response carried no top-level words here.
     assert payload["words"] == []
     assert payload["metrics"]["real_time_factor"] == 0.5
 
@@ -84,14 +86,25 @@ async def test_openai_compatible_provider_sends_multipart_contract_and_parses_re
     assert str(request.url) == "https://asr.example/v1/audio/transcriptions"
     assert request.headers["authorization"] == "Bearer secret-key"
     assert b'form-data; name="model"' in body and b"persian-model" in body
-    assert b'timestamp_granularities' not in body
+    # Was `assert b'timestamp_granularities' not in body` -- the request now
+    # always asks for word-level timestamps (see provider.py's `transcribe`),
+    # which is the whole point of this architecture change, so this flips to
+    # asserting the field IS present with the expected value.
+    assert b'form-data; name="timestamp_granularities[]"\r\n\r\nword\r\n' in body
+    assert b'form-data; name="vad_filter"\r\n\r\ntrue\r\n' in body
     assert b'form-data; name="extra_body[num_beams]"\r\n\r\n7\r\n' in body
     assert b'filename="sample.wav"' in body
     assert response.text == "متن پاسخ"
     assert response.external_request_id == "remote-request"
 
 
-def test_canonical_transcript_ignores_unsolicited_provider_word_timestamps():
+def test_canonical_transcript_converts_requested_word_timestamps_to_milliseconds():
+    # Was test_canonical_transcript_ignores_unsolicited_provider_word_timestamps,
+    # asserting payload["words"] == []. The ASR request now always asks for
+    # timestamp_granularities[]=word (see provider.py), so canonical_transcript
+    # must carry those words through for word-level speaker alignment instead
+    # of discarding them -- updated per that architecture change, not touched
+    # for any other reason.
     payload = canonical_transcript(
         TranscriptionResponse(
             text="سلام",
@@ -101,6 +114,7 @@ def test_canonical_transcript_ignores_unsolicited_provider_word_timestamps():
                 "text": "سلام",
                 "words": [{"word": "سلام", "start": 0.1, "end": 0.8}],
             },
+            words=[{"word": "سلام", "start": 0.1, "end": 0.8}],
         ),
         source_id="voice",
         model_name="model",
@@ -108,7 +122,7 @@ def test_canonical_transcript_ignores_unsolicited_provider_word_timestamps():
         audio_duration_seconds=1,
     )
 
-    assert payload["words"] == []
+    assert payload["words"] == [{"text": "سلام", "start_ms": 100, "end_ms": 800}]
 
 
 @pytest.mark.asyncio

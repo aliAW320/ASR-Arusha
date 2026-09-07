@@ -50,22 +50,29 @@ async def _meeting_with_voice(client, email: str):
 
 @pytest.mark.asyncio
 async def test_upload_queues_persistent_job_attempt_and_registry(client, session):
+    # Was written when upload queued a single TRANSCRIPTION job. Uploading now
+    # queues TRANSCRIPTION and DIARIZATION as two independent root jobs (see
+    # _queue_transcription_and_diarization) so alignment can run regardless of
+    # which one finishes first -- counts and the job lookup below are updated
+    # for that, everything else about the test is unchanged.
     owner, meeting, voice = await _meeting_with_voice(client, "queue-owner@example.com")
     response = await client.get(
         f"/meetings/{meeting['id']}/processing", headers=authorization(owner)
     )
 
     assert response.status_code == 200, response.text
-    job = response.json()[0]
+    jobs = {job["stage"]: job for job in response.json()}
+    assert set(jobs) == {"transcription", "diarization"}
+    job = jobs["transcription"]
     assert job["voice_id"] == voice["id"]
-    assert job["stage"] == "transcription"
     assert job["status"] == "queued"
     assert job["attempts"][0]["attempt_number"] == 1
+    assert jobs["diarization"]["status"] == "queued"
     assert await session.scalar(select(func.count(Result.id))) == 1
-    assert await session.scalar(select(func.count(ProcessingJob.id))) == 1
-    assert await session.scalar(select(func.count(ProcessingAttempt.id))) == 1
-    assert await session.scalar(select(func.count(ModelRuntime.id))) == 1
-    assert await session.scalar(select(func.count(ModelDefinition.id))) == 1
+    assert await session.scalar(select(func.count(ProcessingJob.id))) == 2
+    assert await session.scalar(select(func.count(ProcessingAttempt.id))) == 2
+    assert await session.scalar(select(func.count(ModelRuntime.id))) == 2
+    assert await session.scalar(select(func.count(ModelDefinition.id))) == 2
     assert await session.scalar(select(func.count(ExternalIntegration.id))) == 1
     stored_voice = await session.get(VoiceFile, uuid.UUID(voice["id"]))
     assert stored_voice.status == VoiceStatus.PENDING
@@ -78,6 +85,10 @@ async def test_upload_queues_persistent_job_attempt_and_registry(client, session
 async def test_processing_access_and_reprocessing_keep_results_isolated(
     client, session_factory
 ):
+    # Updated the same way as test_upload_queues_persistent_job_attempt_and_registry
+    # above: every "process" call now creates two independent jobs (TRANSCRIPTION
+    # + DIARIZATION) instead of one, so job/attempt lookups here target the
+    # TRANSCRIPTION one explicitly and the final count doubles (2 calls x 2 jobs).
     owner, meeting, _ = await _meeting_with_voice(client, "reprocess-owner@example.com")
     outsider = await register_user(client, "reprocess-outsider@example.com")
 
@@ -87,7 +98,10 @@ async def test_processing_access_and_reprocessing_keep_results_isolated(
     duplicate = await client.post(
         f"/meetings/{meeting['id']}/process", headers=authorization(owner)
     )
-    job_id = first.json()[0]["id"]
+    first_transcription = next(
+        job for job in first.json() if job["stage"] == "transcription"
+    )
+    job_id = first_transcription["id"]
     denied_start = await client.post(
         f"/meetings/{meeting['id']}/process", headers=authorization(outsider)
     )
@@ -97,7 +111,11 @@ async def test_processing_access_and_reprocessing_keep_results_isolated(
     assert first.status_code == 200
     assert duplicate.status_code == 409
     async with session_factory() as session:
-        attempt = await session.scalar(select(ProcessingAttempt))
+        attempt = await session.scalar(
+            select(ProcessingAttempt)
+            .join(ProcessingAttempt.job)
+            .where(ProcessingJob.stage == ProcessingStage.TRANSCRIPTION)
+        )
         voice = await session.scalar(select(VoiceFile))
         attempt.status = ProcessingAttemptStatus.SUCCEEDED
         voice.status = VoiceStatus.FINISHED
@@ -108,22 +126,28 @@ async def test_processing_access_and_reprocessing_keep_results_isolated(
     owner_status = await client.get(
         f"/meetings/{meeting['id']}/processing", headers=authorization(owner)
     )
+    second_transcription = next(
+        job for job in second.json() if job["stage"] == "transcription"
+    )
     owner_result = await client.get(
-        f"/results/{second.json()[0]['result_id']}", headers=authorization(owner)
+        f"/results/{second_transcription['result_id']}", headers=authorization(owner)
     )
     denied_result = await client.get(
-        f"/results/{second.json()[0]['result_id']}", headers=authorization(outsider)
+        f"/results/{second_transcription['result_id']}", headers=authorization(outsider)
     )
     assert second.status_code == 202
-    assert first.json()[0]["result_id"] != second.json()[0]["result_id"]
+    assert first_transcription["result_id"] != second_transcription["result_id"]
     assert denied_start.status_code == 403
     assert denied_status.status_code == 403
     assert owner_result.status_code == 200
     assert denied_result.status_code == 403
-    assert len(owner_status.json()) == 2
+    assert len(owner_status.json()) == 4
     async with session_factory() as session:
-        assert await session.scalar(select(func.count(ModelRuntime.id))) == 1
-        assert await session.scalar(select(func.count(ModelDefinition.id))) == 1
+        # 2 runtimes/definitions now: ASR ("openai-compatible-asr") and
+        # diarization ("pyannote.audio-local"), each registered once and
+        # reused across both process() calls -- not duplicated per call.
+        assert await session.scalar(select(func.count(ModelRuntime.id))) == 2
+        assert await session.scalar(select(func.count(ModelDefinition.id))) == 2
         assert await session.scalar(select(func.count(ExternalIntegration.id))) == 1
 
 
@@ -170,7 +194,9 @@ async def test_worker_completes_job_and_persists_canonical_and_raw_artifacts(
     queued = await client.get(
         f"/meetings/{meeting['id']}/processing", headers=authorization(owner)
     )
-    job = queued.json()[0]
+    # Upload now queues TRANSCRIPTION and DIARIZATION independently; this test
+    # only drives the ASR worker, so it needs the TRANSCRIPTION job specifically.
+    job = next(item for item in queued.json() if item["stage"] == "transcription")
     worker = ASRWorker(
         session_factory=session_factory,
         storage=client.storage,
@@ -295,6 +321,7 @@ async def test_diarization_worker_finishes_pipeline_and_exposes_speaker_transcri
         assert stages == {
             ProcessingStage.TRANSCRIPTION,
             ProcessingStage.DIARIZATION,
+            ProcessingStage.ALIGNMENT,
             ProcessingStage.CLEANING,
             ProcessingStage.MEETING_COMPOSE,
         }
@@ -549,7 +576,15 @@ async def test_worker_does_not_retry_permanent_failure_and_marks_voice_error(
     assert await worker.run_once() is False
 
     async with session_factory() as session:
-        attempts = (await session.scalars(select(ProcessingAttempt))).all()
+        # Upload also queues an independent DIARIZATION job/attempt now, so
+        # this filters to the TRANSCRIPTION attempt this worker actually ran.
+        attempts = (
+            await session.scalars(
+                select(ProcessingAttempt)
+                .join(ProcessingAttempt.job)
+                .where(ProcessingJob.stage == ProcessingStage.TRANSCRIPTION)
+            )
+        ).all()
         stored_voice = await session.get(VoiceFile, uuid.UUID(voice["id"]))
         assert len(attempts) == 1
         assert attempts[0].status == ProcessingAttemptStatus.FAILED
@@ -586,9 +621,14 @@ async def test_worker_stops_after_three_retryable_attempts_and_keeps_failure_his
     assert await worker.run_once() is False
 
     async with session_factory() as session:
+        # Same as above: filter to the TRANSCRIPTION job's attempts so the
+        # independently-queued DIARIZATION attempt doesn't get counted here.
         attempts = (
             await session.scalars(
-                select(ProcessingAttempt).order_by(ProcessingAttempt.attempt_number)
+                select(ProcessingAttempt)
+                .join(ProcessingAttempt.job)
+                .where(ProcessingJob.stage == ProcessingStage.TRANSCRIPTION)
+                .order_by(ProcessingAttempt.attempt_number)
             )
         ).all()
         stored_voice = await session.get(VoiceFile, uuid.UUID(voice["id"]))
@@ -600,3 +640,138 @@ async def test_worker_stops_after_three_retryable_attempts_and_keeps_failure_his
         assert stored_voice.status == VoiceStatus.ERROR
         assert event_types.count("processing.retry_queued") == 2
         assert event_types.count("processing.failed") == 1
+
+
+# ---------------------------------------------------------------------------
+# ASR + diarization run independently and merge via word-level alignment,
+# regardless of which one finishes first.
+# ---------------------------------------------------------------------------
+
+
+class WordTimestampProvider:
+    async def transcribe(self, audio, **kwargs):
+        assert audio.read() == b"RIFF-audio"
+        return TranscriptionResponse(
+            text="سلام دنیا",
+            language="fa",
+            segments=[{"id": 0, "start": 0, "end": 1.5, "text": "سلام دنیا"}],
+            raw_response={"text": "سلام دنیا"},
+            words=[
+                {"word": "سلام", "start": 0.05, "end": 0.4},
+                {"word": "دنیا", "start": 1.1, "end": 1.4},
+            ],
+        )
+
+
+@pytest.mark.asyncio
+async def test_alignment_runs_via_word_level_merge_when_asr_finishes_before_diarization(
+    client, session_factory
+):
+    owner, meeting, voice = await _meeting_with_voice(
+        client, "order-asr-first@example.com"
+    )
+    asr_worker = ASRWorker(
+        session_factory=session_factory,
+        storage=client.storage,
+        settings=get_settings(),
+        provider_factory=lambda _: WordTimestampProvider(),
+    )
+    diarization_worker = DiarizationWorker(
+        session_factory=session_factory,
+        storage=client.storage,
+        settings=get_settings(),
+        provider_factory=lambda _: SuccessfulDiarizationProvider(),
+    )
+
+    assert await asr_worker.run_once() is True
+
+    async with session_factory() as session:
+        stages = set(await session.scalars(select(ProcessingJob.stage)))
+        assert ProcessingStage.ALIGNMENT not in stages  # diarization not done yet
+
+    assert await diarization_worker.run_once() is True
+
+    async with session_factory() as session:
+        stages = set(await session.scalars(select(ProcessingJob.stage)))
+        assert {
+            ProcessingStage.TRANSCRIPTION,
+            ProcessingStage.DIARIZATION,
+            ProcessingStage.ALIGNMENT,
+            ProcessingStage.CLEANING,
+        } <= stages
+
+    results = await client.get(
+        f"/voices/{voice['id']}/results", headers=authorization(owner)
+    )
+    result = results.json()[0]
+    assert {item["artifact_type"] for item in result["artifacts"]} >= {
+        "transcript_json",
+        "diarization_json",
+        "aligned_transcript_json",
+    }
+    artifact = next(
+        item for item in result["artifacts"] if item["artifact_type"] == "aligned_transcript_json"
+    )
+    payload = json.loads(
+        client.storage.objects[(artifact["minio_bucket"], artifact["minio_key"])]
+    )
+    assert [word["text"] for word in payload["words"]] == ["سلام", "دنیا"]
+    assert [word["speaker_id"] for word in payload["words"]] == [
+        "SPEAKER_00",
+        "SPEAKER_01",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_alignment_runs_via_word_level_merge_when_diarization_finishes_before_asr(
+    client, session_factory
+):
+    """Same scenario as above with the two workers run in the opposite order
+    -- proves the merge does not depend on execution order."""
+    owner, meeting, voice = await _meeting_with_voice(
+        client, "order-diarization-first@example.com"
+    )
+    asr_worker = ASRWorker(
+        session_factory=session_factory,
+        storage=client.storage,
+        settings=get_settings(),
+        provider_factory=lambda _: WordTimestampProvider(),
+    )
+    diarization_worker = DiarizationWorker(
+        session_factory=session_factory,
+        storage=client.storage,
+        settings=get_settings(),
+        provider_factory=lambda _: SuccessfulDiarizationProvider(),
+    )
+
+    assert await diarization_worker.run_once() is True
+
+    async with session_factory() as session:
+        stages = set(await session.scalars(select(ProcessingJob.stage)))
+        assert ProcessingStage.ALIGNMENT not in stages  # transcription not done yet
+
+    assert await asr_worker.run_once() is True
+
+    results = await client.get(
+        f"/voices/{voice['id']}/results", headers=authorization(owner)
+    )
+    result = results.json()[0]
+    artifact = next(
+        item for item in result["artifacts"] if item["artifact_type"] == "aligned_transcript_json"
+    )
+    payload = json.loads(
+        client.storage.objects[(artifact["minio_bucket"], artifact["minio_key"])]
+    )
+    assert [word["text"] for word in payload["words"]] == ["سلام", "دنیا"]
+    assert [word["speaker_id"] for word in payload["words"]] == [
+        "SPEAKER_00",
+        "SPEAKER_01",
+    ]
+    async with session_factory() as session:
+        stages = set(await session.scalars(select(ProcessingJob.stage)))
+        assert {
+            ProcessingStage.TRANSCRIPTION,
+            ProcessingStage.DIARIZATION,
+            ProcessingStage.ALIGNMENT,
+            ProcessingStage.CLEANING,
+        } <= stages

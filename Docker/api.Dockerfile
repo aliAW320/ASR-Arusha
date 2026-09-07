@@ -12,6 +12,7 @@ RUN uv sync --locked --no-dev
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY fast_Backend/app ./app
+COPY src/alignment ./alignment
 COPY src/meeting_composer ./meeting_composer
 
 EXPOSE 8000

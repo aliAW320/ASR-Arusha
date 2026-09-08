@@ -261,6 +261,85 @@ async def ensure_cleaner_registry(
     return model, integration
 
 
+async def ensure_publication_registry(
+    session: AsyncSession,
+    settings: Settings,
+) -> tuple[ModelDefinition, ExternalIntegration]:
+    runtime = await session.scalar(
+        select(ModelRuntime).where(ModelRuntime.name == "openai-compatible-summary")
+    )
+    if runtime is None:
+        runtime = ModelRuntime(
+            name="openai-compatible-summary",
+            kind=ModelRuntimeKind.REMOTE,
+        )
+        session.add(runtime)
+        await session.flush()
+
+    model = await session.scalar(
+        select(ModelDefinition).where(
+            ModelDefinition.runtime_id == runtime.id,
+            ModelDefinition.task_type == ModelTaskType.MINUTES_GENERATION,
+            ModelDefinition.name == settings.summary_model_name,
+            ModelDefinition.version == "configured",
+        )
+    )
+    if model is None:
+        model = ModelDefinition(
+            runtime=runtime,
+            task_type=ModelTaskType.MINUTES_GENERATION,
+            name=settings.summary_model_name,
+            version="configured",
+            source_uri=settings.base_url,
+        )
+        session.add(model)
+
+    endpoint = settings.kb_base_url.rstrip("/")
+    if not endpoint.endswith("/mcp"):
+        endpoint = f"{endpoint}/mcp"
+    integration_version = hashlib.sha256(endpoint.encode()).hexdigest()[:12]
+    integration = await session.scalar(
+        select(ExternalIntegration).where(
+            ExternalIntegration.name == "outline-mcp",
+            ExternalIntegration.version == integration_version,
+        )
+    )
+    if integration is None:
+        integration = ExternalIntegration(
+            name="outline-mcp",
+            version=integration_version,
+            kind=ExternalIntegrationKind.MCP,
+            endpoint=endpoint,
+        )
+        session.add(integration)
+
+    await session.flush()
+    return model, integration
+
+
+async def queue_meeting_publication(
+    session: AsyncSession,
+    meeting_result: MeetingResult,
+    settings: Settings,
+) -> ProcessingJob:
+    model, integration = await ensure_publication_registry(session, settings)
+    job = ProcessingJob(
+        meeting_result=meeting_result,
+        stage=ProcessingStage.MINUTES_GENERATION,
+        model=model,
+        integration=integration,
+    )
+    attempt = ProcessingAttempt(
+        job=job,
+        attempt_number=1,
+        status=ProcessingAttemptStatus.QUEUED,
+    )
+    session.add_all([job, attempt])
+    await session.flush()
+    enqueue_attempt(session, attempt, ProcessingStage.MINUTES_GENERATION, settings)
+    return job
+
+
 async def queue_result_cleaning(
     session: AsyncSession,
     result: Result,

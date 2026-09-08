@@ -13,6 +13,7 @@ dependencies = [
     "minio>=7.2.20",
     "pwdlib[argon2]>=0.3.0",
     "pydantic-settings",
+    "pymupdf==1.26.4",
     "pyjwt>=2.13.0",
     "python-multipart",
     "sqlalchemy[asyncio]>=2.0.51",

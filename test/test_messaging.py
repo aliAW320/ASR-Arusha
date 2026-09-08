@@ -131,7 +131,8 @@ async def test_topology_declares_four_durable_work_queues_and_shared_dlq():
 async def test_dispatcher_publishes_persistent_message_and_marks_outbox(
     client, session_factory, monkeypatch
 ):
-    await _uploaded_attempt(client, session_factory)
+    attempt = await _uploaded_attempt(client, session_factory)
+    assert attempt.queue_task_id is not None
     monkeypatch.setattr(dispatcher, "SessionFactory", session_factory)
     exchange = FakeExchange(PROCESSING_EXCHANGE)
 
@@ -142,6 +143,7 @@ async def test_dispatcher_publishes_persistent_message_and_marks_outbox(
     assert mandatory is True
     assert message.delivery_mode == DeliveryMode.PERSISTENT
     payload = json.loads(message.body)
+    assert message.message_id == attempt.queue_task_id
     assert routing_key == {
         "transcription": "asr.queue",
         "diarization": "diar.queue",
@@ -177,10 +179,36 @@ async def test_consumer_rejects_invalid_payload_to_dead_letter_queue(session_fac
 
 
 @pytest.mark.asyncio
-async def test_consumer_acks_duplicate_delivery_without_rerunning_work(
+async def test_consumer_requeues_delivery_when_queued_attempt_was_not_claimed(
     client, session_factory
 ):
     attempt = await _uploaded_attempt(client, session_factory)
+    message = FakeIncomingMessage(
+        json.dumps({"attempt_id": str(attempt.id)}).encode()
+    )
+
+    await handle_attempt_message(
+        message=message,
+        queue_name="asr.queue",
+        session_factory=session_factory,
+        handler=lambda _: _false(),
+    )
+
+    assert message.acked == 0
+    assert message.rejected == []
+    assert message.nacked == [True]
+
+
+@pytest.mark.asyncio
+async def test_consumer_acks_duplicate_delivery_after_attempt_completed(
+    client, session_factory
+):
+    attempt = await _uploaded_attempt(client, session_factory)
+    async with session_factory() as session:
+        current = await session.get(ProcessingAttempt, attempt.id)
+        current.status = ProcessingAttemptStatus.SUCCEEDED
+        current.finished_at = datetime.now(timezone.utc)
+        await session.commit()
     message = FakeIncomingMessage(
         json.dumps({"attempt_id": str(attempt.id)}).encode()
     )

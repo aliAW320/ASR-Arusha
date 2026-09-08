@@ -11,10 +11,18 @@ const STATUS_LABELS = {
   failed: "ناموفق",
   cancelled: "لغوشده",
 };
+const PUBLICATION_STATUS_LABELS = {
+  awaiting_approval: "منتظر تأیید",
+  queued: "در صف انتشار",
+  running: "در حال خلاصه‌سازی و انتشار",
+  published: "منتشرشده",
+  failed: "انتشار ناموفق",
+};
 
 let pollTimer = null;
 let versions = [];
 let selectedId = null;
+let publicationPollTimer = null;
 
 function formatTime(milliseconds) {
   const totalSeconds = Math.floor((milliseconds || 0) / 1000);
@@ -144,10 +152,63 @@ async function loadVersions() {
   await loadSelectedVersion();
 }
 
+function renderAttachments(attachments, publication) {
+  const locked = ["queued", "running"].includes(publication.status);
+  $("#attachment-input").disabled = locked;
+  $("#attachment-list").innerHTML = attachments.length
+    ? attachments.map((attachment) => `<div class="list-row"><div class="list-row-main"><span class="file-icon" aria-hidden="true">▧</span><div><strong>${escapeHtml(attachment.original_filename)}</strong><small>${escapeHtml(attachment.content_type)} · ${(attachment.size_bytes / 1048576).toFixed(2)} مگابایت</small></div></div><button class="delete-icon" type="button" aria-label="حذف ${escapeHtml(attachment.original_filename)}" data-delete-attachment="${attachment.id}" ${locked ? "disabled" : ""}>×</button></div>`).join("")
+    : `<div class="empty-state"><span aria-hidden="true">▧</span><p>پیوستی برای این جلسه ثبت نشده است.</p></div>`;
+}
+
+function renderPublication(publication) {
+  const status = publication.status || "awaiting_approval";
+  const active = ["queued", "running"].includes(status);
+  $("#publication-status").textContent = PUBLICATION_STATUS_LABELS[status] || status;
+  $("#publication-status").dataset.status = status;
+  $("#destination-path").value = publication.destination_path || "پروژه‌های کارآموزی/ASR test";
+  $("#destination-path").disabled = active;
+  const button = $("#approve-publication");
+  button.disabled = active;
+  button.textContent = active ? "در حال انجام…" : status === "published" ? "تأیید و به‌روزرسانی دوباره" : status === "failed" ? "تلاش مجدد" : "تأیید نهایی و ارسال";
+
+  const error = $("#publication-error");
+  if (status === "failed") {
+    error.classList.remove("hidden");
+    $("#publication-error-code").textContent = publication.error_code || "publication_failed";
+    $("#publication-error-message").textContent = publication.error_message || "علت خطا ثبت نشده است.";
+  } else {
+    error.classList.add("hidden");
+  }
+  const vision = $("#vision-note");
+  if (publication.vision_status === "unsupported") {
+    vision.textContent = "پردازش چندوجهی فعلاً ممکن نیست؛ تصاویر در تولید خلاصه نادیده گرفته شدند، اما در سند خلاصه قرار گرفتند.";
+    vision.classList.remove("hidden");
+  } else if (publication.vision_status === "used") {
+    vision.textContent = "تصاویر در تولید خلاصه استفاده شدند.";
+    vision.classList.remove("hidden");
+  } else {
+    vision.classList.add("hidden");
+  }
+}
+
+async function loadPublication() {
+  if (publicationPollTimer) clearTimeout(publicationPollTimer);
+  publicationPollTimer = null;
+  const [publication, attachments] = await Promise.all([
+    api(`/meetings/${encodeURIComponent(meetingId)}/publication`),
+    api(`/meetings/${encodeURIComponent(meetingId)}/attachments`),
+  ]);
+  renderPublication(publication);
+  renderAttachments(attachments, publication);
+  if (["queued", "running"].includes(publication.status)) {
+    publicationPollTimer = setTimeout(() => loadPublication().catch((exception) => toast(exception.message, "error")), 3000);
+  }
+}
+
 const user = await requireUser();
 if (user) {
   renderSidebar(user);
-  loadVersions().catch((exception) => toast(exception.message, "error"));
+  Promise.all([loadVersions(), loadPublication()]).catch((exception) => toast(exception.message, "error"));
 }
 
 $("#version-select").addEventListener("change", (event) => {
@@ -165,5 +226,60 @@ $("#recompose-button").addEventListener("click", async () => {
     await loadVersions();
   } catch (exception) {
     toast(exception.message, "error");
+  }
+});
+
+$("#attachment-input").addEventListener("change", async (event) => {
+  const files = [...event.target.files];
+  if (!files.length) return;
+  const progress = $("#attachment-progress");
+  progress.classList.remove("hidden");
+  try {
+    for (const file of files) {
+      const data = new FormData();
+      data.append("upload", file);
+      await api(`/meetings/${encodeURIComponent(meetingId)}/attachments`, { method: "POST", body: data });
+    }
+    toast("پیوست‌ها ذخیره شدند و برای تأیید بعدی آماده‌اند.");
+    await loadPublication();
+  } catch (exception) {
+    toast(exception.message, "error");
+  } finally {
+    progress.classList.add("hidden");
+    event.target.value = "";
+  }
+});
+
+$("#attachment-list").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-delete-attachment]");
+  if (!button || !confirm("این پیوست حذف شود؟")) return;
+  try {
+    await api(`/meetings/${encodeURIComponent(meetingId)}/attachments/${encodeURIComponent(button.dataset.deleteAttachment)}`, { method: "DELETE" });
+    toast("پیوست حذف شد.");
+    await loadPublication();
+  } catch (exception) {
+    toast(exception.message, "error");
+  }
+});
+
+$("#publication-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = $("#approve-publication");
+  button.disabled = true;
+  try {
+    await api(`/meetings/${encodeURIComponent(meetingId)}/publication/approve`, {
+      method: "POST",
+      body: JSON.stringify({ destination_path: $("#destination-path").value.trim() }),
+    });
+    toast("تأیید ثبت شد؛ خلاصه‌سازی و انتشار در صف قرار گرفت.");
+    await loadPublication();
+  } catch (exception) {
+    toast(exception.message, "error");
+    $("#publication-error").classList.remove("hidden");
+    $("#publication-error-code").textContent = "approval_failed";
+    $("#publication-error-message").textContent = exception.message;
+    $("#publication-error").focus();
+  } finally {
+    button.disabled = false;
   }
 });

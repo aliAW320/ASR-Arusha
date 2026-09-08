@@ -18,6 +18,8 @@ from app.models import (
     DiarizationSpeaker,
     Meeting,
     MeetingArtifactType,
+    MeetingPublication,
+    MeetingPublicationStatus,
     MeetingResult,
     MeetingResultArtifact,
     MeetingResultSource,
@@ -239,6 +241,30 @@ class MeetingComposerWorker:
                 attempt.status = ProcessingAttemptStatus.SUCCEEDED
                 attempt.finished_at = now
                 meeting_result.completed_at = now
+                publication = await session.scalar(
+                    select(MeetingPublication).where(
+                        MeetingPublication.meeting_id == item.meeting_id
+                    )
+                )
+                if publication is None:
+                    publication = MeetingPublication(
+                        meeting=meeting,
+                        meeting_result=meeting_result,
+                        destination_path=self.settings.meeting_publication_default_path,
+                    )
+                    session.add(publication)
+                elif publication.status not in {
+                    MeetingPublicationStatus.QUEUED,
+                    MeetingPublicationStatus.RUNNING,
+                }:
+                    publication.meeting_result = meeting_result
+                    publication.status = MeetingPublicationStatus.AWAITING_APPROVAL
+                    publication.approved_by_id = None
+                    publication.approved_at = None
+                    publication.current_job_id = None
+                    publication.error_code = None
+                    publication.error_message = None
+                    publication.completed_at = None
                 add_history_event(
                     session,
                     event_type="meeting_composition.succeeded",
@@ -252,6 +278,8 @@ class MeetingComposerWorker:
                     affected_meetings=[meeting] if meeting else [],
                     affected_meeting_results=[meeting_result],
                 )
+               
+               
                 await session.commit()
         except Exception:
             try:
@@ -417,14 +445,13 @@ class MeetingComposerWorker:
         return True
 
 
-async def run_forever() -> None:
-    settings = get_settings()
-    configure_logging(
-        service="meeting-composer-worker",
-        environment=settings.app_env,
-        level=settings.log_level,
-        json_output=settings.json_logs_enabled,
-    )
+async def run(settings: Settings) -> None:
+    """Run the meeting-composer polling loop until cancelled.
+
+    Does not touch global logging config or the shared DB engine, so it can
+    be embedded as a background task in another process (e.g. the API
+    process) alongside other workers that share the same engine.
+    """
     worker = MeetingComposerWorker(
         session_factory=SessionFactory,
         storage=get_object_storage(),
@@ -435,19 +462,31 @@ async def run_forever() -> None:
         "Meeting composer worker started",
         worker_name=worker.worker_name,
     )
+    while True:
+        try:
+            worked = await worker.run_once()
+        except Exception as error:
+            logger.exception(
+                "meeting_composer_worker_iteration_failed",
+                "Meeting composer worker iteration failed",
+                error=error,
+            )
+            worked = False
+        if not worked:
+            await asyncio.sleep(settings.meeting_composer_poll_interval_seconds)
+
+
+async def run_forever() -> None:
+    """Standalone entrypoint: owns logging setup and DB engine teardown."""
+    settings = get_settings()
+    configure_logging(
+        service="meeting-composer-worker",
+        environment=settings.app_env,
+        level=settings.log_level,
+        json_output=settings.json_logs_enabled,
+    )
     try:
-        while True:
-            try:
-                worked = await worker.run_once()
-            except Exception as error:
-                logger.exception(
-                    "meeting_composer_worker_iteration_failed",
-                    "Meeting composer worker iteration failed",
-                    error=error,
-                )
-                worked = False
-            if not worked:
-                await asyncio.sleep(settings.meeting_composer_poll_interval_seconds)
+        await run(settings)
     finally:
         await close_database()
 

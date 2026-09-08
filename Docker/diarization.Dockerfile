@@ -19,8 +19,8 @@ RUN uv pip install \
     --requirement Docker/diarization.requirements.lock
 
 COPY fast_Backend/app ./app
-COPY src/alignment ./alignment
+COPY fast_Backend/alignment ./alignment
 COPY src/diarization ./diarization
-COPY src/meeting_composer ./meeting_composer
+COPY fast_Backend/meeting_composer ./meeting_composer
 
 CMD [".venv/bin/python", "-m", "diarization.bootstrap"]

@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     minio_meetings_bucket: str = "meetings"
     minio_exports_bucket: str = "transcript-exports"
     voice_upload_max_bytes: int = 500 * 1024 * 1024
+    meeting_attachment_max_bytes: int = 50 * 1024 * 1024
 
     rabbitmq_host: str = "rabbitmq"
     rabbitmq_port: int = Field(default=5672, ge=1, le=65535)
@@ -65,11 +66,26 @@ class Settings(BaseSettings):
     cleaner_model_name: str = "openai/Qwen3.8-27B"
     cleaner_request_timeout_seconds: int = Field(default=900, ge=30)
     cleaner_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    cleaner_enable_thinking: bool = False
+    cleaner_max_concurrency: int = Field(default=2, ge=1, le=10)
     cleaner_max_attempts: int = Field(default=3, ge=1, le=10)
     cleaner_worker_name: str = "cleaner-worker"
     cleaner_chunk_max_chars: int = Field(default=12_000, ge=1000)
     cleaner_overlap_min_segments: int = Field(default=1, ge=0, le=20)
     cleaner_overlap_max_segments: int = Field(default=5, ge=0, le=20)
+
+    meeting_publication_default_path: str = "پروژه‌های کارآموزی/ASR test"
+    summary_model_name: str = "openai/Qwen3.8-27B"
+    summary_request_timeout_seconds: int = Field(default=900, ge=30)
+    summary_temperature: float = Field(default=0.2, ge=0.0, le=2.0)
+    summary_max_tokens: int = Field(default=4096, ge=256, le=32768)
+    summary_multimodal_enabled: bool = True
+    summary_pdf_dpi: int = Field(default=200, ge=72, le=400)
+    mcp_max_attempts: int = Field(default=3, ge=1, le=10)
+    mcp_worker_name: str = "mcp-worker"
+    mcp_request_timeout_seconds: int = Field(default=120, ge=10)
+    kb_base_url: str = "https://kb.arusha.dev"
+    kb_api_key: SecretStr | None = None
 
     meeting_composer_max_attempts: int = Field(default=3, ge=1, le=10)
     meeting_composer_poll_interval_seconds: float = Field(default=2.0, gt=0)

@@ -1,6 +1,16 @@
 from fastapi import APIRouter
 
-from .routes import auth, health, history, meeting_results, meetings, processing, speakers, voices
+from .routes import (
+    auth,
+    health,
+    history,
+    meeting_results,
+    meetings,
+    processing,
+    publications,
+    speakers,
+    voices,
+)
 
 
 api_router = APIRouter()
@@ -12,3 +22,4 @@ api_router.include_router(history.router)
 api_router.include_router(voices.router)
 api_router.include_router(processing.router)
 api_router.include_router(meeting_results.router)
+api_router.include_router(publications.router)

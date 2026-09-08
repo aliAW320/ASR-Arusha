@@ -439,7 +439,29 @@ class ASRWorker:
         return True
 
 
+async def run(settings: Settings) -> None:
+    """Run the ASR consume loop until cancelled.
+
+    Does not touch global logging config or the shared DB engine, so it can
+    be embedded as a background task in another process (e.g. the API
+    process) alongside other workers that share the same engine.
+    """
+    worker = ASRWorker(
+        session_factory=SessionFactory,
+        storage=get_object_storage(),
+        settings=settings,
+    )
+    logger.info("asr_worker_started", "ASR worker started", worker_name=worker.worker_name)
+    await consume_attempt_queue(
+        settings=settings,
+        queue_name=QueueNames.from_settings(settings).asr,
+        session_factory=SessionFactory,
+        handler=worker.run_once,
+    )
+
+
 async def run_forever() -> None:
+    """Standalone entrypoint: owns logging setup and DB engine teardown."""
     settings = get_settings()
     configure_logging(
         service="asr-worker",
@@ -447,19 +469,8 @@ async def run_forever() -> None:
         level=settings.log_level,
         json_output=settings.json_logs_enabled,
     )
-    worker = ASRWorker(
-        session_factory=SessionFactory,
-        storage=get_object_storage(),
-        settings=settings,
-    )
-    logger.info("asr_worker_started", "ASR worker started", worker_name=worker.worker_name)
     try:
-        await consume_attempt_queue(
-            settings=settings,
-            queue_name=QueueNames.from_settings(settings).asr,
-            session_factory=SessionFactory,
-            handler=worker.run_once,
-        )
+        await run(settings)
     finally:
         await close_database()
 

@@ -1,13 +1,21 @@
+import asyncio
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 from .api.router import api_router
-from .config import get_settings
+from .config import Settings, get_settings
 from .database import close_database
+from .messaging import dispatcher
 from .observability.events import LogEvent
 from .observability.logging import configure_logging, get_logger
 from .observability.middleware import RequestContextMiddleware
+
+import asr.worker as asr_worker
+import cleaner.worker as cleaner_worker
+import mcp_worker.worker as mcp_worker_worker
+import meeting_composer.worker as meeting_composer_worker
 
 
 settings = get_settings()
@@ -19,13 +27,48 @@ configure_logging(
 )
 logger = get_logger(__name__)
 
+# Every processing worker except diarization (heavy, separate ML deps) runs
+# as a background task inside this same process instead of its own
+# container/Dockerfile. Each `run` coroutine owns no process-wide state
+# (logging config, DB engine) of its own -- that stays centralized here so
+# one worker's lifecycle can't tear down state the others still depend on.
+WorkerRunner = Callable[[Settings], Awaitable[None]]
+BACKGROUND_WORKERS: tuple[tuple[str, WorkerRunner], ...] = (
+    ("broker-dispatcher", dispatcher.run),
+    ("asr-worker", asr_worker.run),
+    ("cleaner-worker", cleaner_worker.run),
+    ("meeting-composer-worker", meeting_composer_worker.run),
+    ("mcp-worker", mcp_worker_worker.run),
+)
+
+
+async def _run_background_worker(name: str, run: WorkerRunner, settings: Settings) -> None:
+    try:
+        await run(settings)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        logger.exception(
+            "background_worker_crashed",
+            "Background worker task crashed and will not be restarted",
+            error=error,
+            worker=name,
+        )
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     logger.info(LogEvent.SERVICE_STARTED, "API service started")
+    tasks = [
+        asyncio.create_task(_run_background_worker(name, run, settings), name=name)
+        for name, run in BACKGROUND_WORKERS
+    ]
     try:
         yield
     finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await close_database()
         logger.info(LogEvent.SERVICE_STOPPED, "API service stopped")
 

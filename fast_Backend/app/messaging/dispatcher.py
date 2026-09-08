@@ -1,6 +1,5 @@
 import asyncio
 import json
-import uuid
 from datetime import datetime, timedelta, timezone
 
 import aio_pika
@@ -8,9 +7,9 @@ from aio_pika import DeliveryMode
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..config import get_settings
+from ..config import Settings, get_settings
 from ..database import SessionFactory, close_database
-from ..models import BrokerOutboxMessage, ProcessingAttempt
+from ..models import BrokerOutboxMessage
 from ..observability.logging import configure_logging, get_logger
 from .topology import PROCESSING_EXCHANGE, declare_topology
 
@@ -75,15 +74,28 @@ async def _publish_next(
             outbox.published_at = datetime.now(timezone.utc)
             outbox.publish_attempts += 1
             outbox.last_error = None
-            attempt_id = outbox.payload.get("attempt_id")
-            if attempt_id:
-                attempt = await session.get(ProcessingAttempt, uuid.UUID(str(attempt_id)))
-                if attempt is not None and attempt.queue_task_id is None:
-                    attempt.queue_task_id = str(outbox.id)
             return True
 
 
+async def run(settings: Settings) -> None:
+    """Run the outbox-dispatch loop until cancelled.
+
+    Does not touch global logging config or the shared DB engine, so it can
+    be embedded as a background task in another process (e.g. the API
+    process) alongside other workers that share the same engine.
+    """
+    connection = await aio_pika.connect_robust(settings.rabbitmq_url)
+    async with connection:
+        channel = await connection.channel(publisher_confirms=True)
+        await declare_topology(channel, settings)
+        exchange = await channel.get_exchange(PROCESSING_EXCHANGE)
+        while True:
+            if not await _publish_next(exchange):
+                await asyncio.sleep(0.25)
+
+
 async def run_forever() -> None:
+    """Standalone entrypoint: owns logging setup and DB engine teardown."""
     settings = get_settings()
     configure_logging(
         service="broker-dispatcher",
@@ -91,15 +103,8 @@ async def run_forever() -> None:
         level=settings.log_level,
         json_output=settings.json_logs_enabled,
     )
-    connection = await aio_pika.connect_robust(settings.rabbitmq_url)
     try:
-        async with connection:
-            channel = await connection.channel(publisher_confirms=True)
-            await declare_topology(channel, settings)
-            exchange = await channel.get_exchange(PROCESSING_EXCHANGE)
-            while True:
-                if not await _publish_next(exchange):
-                    await asyncio.sleep(0.25)
+        await run(settings)
     finally:
         await close_database()
 

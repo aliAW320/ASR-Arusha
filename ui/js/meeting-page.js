@@ -7,18 +7,67 @@ if (!meetingId) location.replace("/meetings.html");
 else $("#meeting-transcript-link").href = `/meeting-transcript.html?id=${encodeURIComponent(meetingId)}`;
 
 function roleLabel(role) { return ({ owner: "مالک", contributor: "همکار", viewer: "مشاهده‌گر" })[role] || role; }
-function renderVoices(voices, transcripts) {
+
+const STAGE_LABELS = {
+  preprocess: "پیش‌پردازش",
+  transcription: "رونویسی",
+  diarization: "تفکیک گوینده",
+  alignment: "هم‌ترازی متن و گوینده",
+  cleaning: "پاک‌سازی متن",
+  minutes_generation: "خلاصه‌سازی",
+  meeting_compose: "ترکیب جلسه",
+};
+const JOB_STATUS_LABELS = { queued: "در صف", running: "در حال اجرا", succeeded: "موفق", failed: "ناموفق", cancelled: "لغوشده" };
+const JOB_STATUS_PRIORITY = { failed: 0, running: 1, queued: 2, succeeded: 3, cancelled: 4 };
+const STAGE_ORDER = { preprocess: 0, transcription: 1, diarization: 1, alignment: 2, cleaning: 3, minutes_generation: 4, meeting_compose: 5 };
+
+function pickActiveJob(jobs) {
+  if (!jobs.length) return null;
+  const latestResultId = jobs.reduce((latest, job) => (!latest || job.created_at > latest.created_at ? job : latest), null).result_id;
+  return jobs
+    .filter((job) => job.result_id === latestResultId)
+    .sort((a, b) => (JOB_STATUS_PRIORITY[a.status] ?? 9) - (JOB_STATUS_PRIORITY[b.status] ?? 9) || (STAGE_ORDER[a.stage] ?? 9) - (STAGE_ORDER[b.stage] ?? 9))[0];
+}
+
+function describeVoiceProcessing(voice, job) {
+  if (!job) return { text: voice.status === "finished" ? "آماده" : voice.status === "error" ? "خطا" : voice.status, className: "" };
+  const stageLabel = STAGE_LABELS[job.stage] || job.stage;
+  const statusLabel = JOB_STATUS_LABELS[job.status] || job.status;
+  const latestAttempt = job.attempts && job.attempts.length ? job.attempts[job.attempts.length - 1] : null;
+  if (job.status === "failed" && latestAttempt) {
+    const code = latestAttempt.error_code || "خطای نامشخص";
+    return { text: `${stageLabel} ناموفق (${code})`, className: "status-failed", title: latestAttempt.error_message || "" };
+  }
+  if (job.status === "running") {
+    const attemptSuffix = latestAttempt && latestAttempt.attempt_number > 1 ? ` · تلاش ${faNumber(latestAttempt.attempt_number)}` : "";
+    return { text: `${stageLabel}: ${statusLabel}${attemptSuffix}`, className: "status-running" };
+  }
+  return { text: `${stageLabel}: ${statusLabel}`, className: "" };
+}
+
+function renderVoices(voices, transcripts, processingByVoice) {
   $("#voice-list").innerHTML = voices.length ? voices.map((voice) => {
     const transcript = transcripts[voice.id];
-    return `<div class="list-row"><div class="list-row-main"><span class="file-icon">♫</span><div><strong>${escapeHtml(voice.original_filename || "فایل صوتی")}</strong><small>${voice.size_bytes ? `${faNumber((voice.size_bytes / 1048576).toFixed(2))} مگابایت` : "اندازه نامشخص"} · ${escapeHtml(voice.status)}</small>${transcript ? `<p class="transcript-text">${escapeHtml(transcript.text)}</p><a class="text-button" href="/transcript.html?result_id=${encodeURIComponent(transcript.id)}">مشاهده متن کامل ←</a>` : ""}</div></div><button class="delete-icon" data-delete-voice="${voice.id}">×</button></div>`;
+    const job = pickActiveJob(processingByVoice[voice.id] || []);
+    const detail = describeVoiceProcessing(voice, job);
+    return `<div class="list-row"><div class="list-row-main"><span class="file-icon">♫</span><div><strong>${escapeHtml(voice.original_filename || "فایل صوتی")}</strong><small>${voice.size_bytes ? `${faNumber((voice.size_bytes / 1048576).toFixed(2))} مگابایت` : "اندازه نامشخص"} · <span class="voice-status ${detail.className}"${detail.title ? ` title="${escapeHtml(detail.title)}"` : ""}>${escapeHtml(detail.text)}</span></small>${transcript ? `<p class="transcript-text">${escapeHtml(transcript.text)}</p><a class="text-button" href="/transcript.html?result_id=${encodeURIComponent(transcript.id)}">مشاهده متن کامل ←</a>` : ""}</div></div><button class="delete-icon" data-delete-voice="${voice.id}">×</button></div>`;
   }).join("") : `<div class="empty-state"><span>♫</span><p>فایل صوتی ثبت نشده است.</p></div>`;
 }
 function renderMembers(members) {
   $("#member-list").innerHTML = members.map((member) => `<div class="list-row"><div class="list-row-main"><span class="avatar">${escapeHtml((member.user.full_name || member.user.email).slice(0, 1))}</span><div><strong>${escapeHtml(member.user.full_name || member.user.email)}</strong><small>${escapeHtml(member.user.email)} · ${roleLabel(member.role)}</small></div></div>${member.role === "owner" ? `<span class="status-pill">مالک</span>` : `<div class="row-actions"><select data-member-role="${member.user.id}"><option value="viewer" ${member.role === "viewer" ? "selected" : ""}>مشاهده‌گر</option><option value="contributor" ${member.role === "contributor" ? "selected" : ""}>همکار</option></select><button class="delete-icon" data-delete-member="${member.user.id}">×</button></div>`}</div>`).join("");
 }
 async function refreshCollections() {
-  const [members, voices] = await Promise.all([api(`/meetings/${meetingId}/members`), api(`/meetings/${meetingId}/voices`)]);
+  const [members, voices, jobs] = await Promise.all([
+    api(`/meetings/${meetingId}/members`),
+    api(`/meetings/${meetingId}/voices`),
+    api(`/meetings/${meetingId}/processing`),
+  ]);
   renderMembers(members);
+  const processingByVoice = {};
+  for (const job of jobs) {
+    if (!job.voice_id) continue;
+    (processingByVoice[job.voice_id] ||= []).push(job);
+  }
   const transcripts = {};
   await Promise.all(voices.map(async (voice) => {
     const results = await api(`/voices/${voice.id}/results`);
@@ -28,7 +77,7 @@ async function refreshCollections() {
       catch (_) { /* result may finish between polling calls */ }
     }
   }));
-  renderVoices(voices, transcripts);
+  renderVoices(voices, transcripts, processingByVoice);
 }
 let refreshInFlight = false;
 async function pollCollections() {

@@ -29,7 +29,7 @@ from app.models import (
 )
 from app.observability.logging import configure_logging, get_logger
 from app.messaging.consumer import consume_attempt_queue
-from app.messaging.outbox import enqueue_attempt, enqueue_mcp
+from app.messaging.outbox import enqueue_attempt
 from app.messaging.topology import QueueNames
 from app.services.audit import add_history_event
 from app.services.cancellation import ProcessingCancelled, run_cancellable
@@ -37,7 +37,7 @@ from app.services.processing import queue_meeting_composition_if_ready
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
 
-from .chunking import build_cleaner_chunks, merge_cleaned_chunks
+from .chunking import CleanerChunk, build_cleaner_chunks, merge_cleaned_chunks
 from .provider import CleanerError, OpenAICompatibleCleanerProvider
 
 
@@ -88,7 +88,48 @@ class CleanerWorker:
             api_key=self.settings.transcript_api_key.get_secret_value(),
             timeout_seconds=self.settings.cleaner_request_timeout_seconds,
             temperature=self.settings.cleaner_temperature,
+            enable_thinking=self.settings.cleaner_enable_thinking,
         )
+
+    async def _clean_chunks(
+        self,
+        chunks: list[CleanerChunk],
+        provider: OpenAICompatibleCleanerProvider,
+        item: WorkItem,
+    ) -> tuple[list[tuple[CleanerChunk, list[dict]]], list[str]]:
+        semaphore = asyncio.Semaphore(self.settings.cleaner_max_concurrency)
+
+        async def clean_one(chunk: CleanerChunk):
+            async with semaphore:
+                return await run_cancellable(
+                    provider.clean(chunk.segments, model=item.model_name),
+                    session_factory=self.session_factory,
+                    attempt_id=item.attempt_id,
+                    poll_interval_seconds=(
+                        self.settings.processing_cancellation_poll_interval_seconds
+                    ),
+                )
+
+        tasks = [asyncio.create_task(clean_one(chunk)) for chunk in chunks]
+        try:
+            responses = await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+        cleaned_chunks = [
+            (chunk, response.segments)
+            for chunk, response in zip(chunks, responses, strict=True)
+        ]
+        request_ids = [
+            response.external_request_id
+            for response in responses
+            if response.external_request_id
+        ]
+        return cleaned_chunks, request_ids
 
     async def claim_next(self, attempt_id: uuid.UUID | None = None) -> uuid.UUID | None:
         async with self.session_factory() as session:
@@ -232,15 +273,6 @@ class CleanerWorker:
                 attempt.finished_at = now
                 result.completed_at = now
                 voice.status = VoiceStatus.FINISHED
-                enqueue_mcp(
-                    session,
-                    self.settings,
-                    meeting_id=item.meeting_id,
-                    voice_id=item.voice_id,
-                    result_id=item.result_id,
-                    artifact_bucket=self.settings.minio_exports_bucket,
-                    artifact_key=key,
-                )
                 meeting = await session.get(Meeting, voice.meeting_id) if voice.meeting_id else None
                 add_history_event(
                     session,
@@ -391,20 +423,9 @@ class CleanerWorker:
                 overlap_max_segments=self.settings.cleaner_overlap_max_segments,
             )
             provider = self.provider_factory(item)
-            cleaned_chunks = []
-            request_ids = []
-            for chunk in chunks:
-                response = await run_cancellable(
-                    provider.clean(chunk.segments, model=item.model_name),
-                    session_factory=self.session_factory,
-                    attempt_id=item.attempt_id,
-                    poll_interval_seconds=(
-                        self.settings.processing_cancellation_poll_interval_seconds
-                    ),
-                )
-                cleaned_chunks.append((chunk, response.segments))
-                if response.external_request_id:
-                    request_ids.append(response.external_request_id)
+            cleaned_chunks, request_ids = await self._clean_chunks(
+                chunks, provider, item
+            )
             cleaned_segments = merge_cleaned_chunks(segments, cleaned_chunks) if chunks else []
             cleaned = {
                 **transcript,
@@ -478,6 +499,19 @@ async def run_forever() -> None:
         level=settings.log_level,
         json_output=settings.json_logs_enabled,
     )
+    try:
+        await run(settings)
+    finally:
+        await close_database()
+
+
+async def run(settings: Settings) -> None:
+    """Run the cleaner consume loop until cancelled.
+
+    Does not touch global logging config or the shared DB engine, so it can
+    be embedded as a background task in another process (e.g. the API
+    process) alongside other workers that share the same engine.
+    """
     worker = CleanerWorker(
         session_factory=SessionFactory,
         storage=get_object_storage(),
@@ -489,15 +523,12 @@ async def run_forever() -> None:
         worker_name=worker.worker_name,
         model=settings.cleaner_model_name,
     )
-    try:
-        await consume_attempt_queue(
-            settings=settings,
-            queue_name=QueueNames.from_settings(settings).cleaning,
-            session_factory=SessionFactory,
-            handler=worker.run_once,
-        )
-    finally:
-        await close_database()
+    await consume_attempt_queue(
+        settings=settings,
+        queue_name=QueueNames.from_settings(settings).cleaning,
+        session_factory=SessionFactory,
+        handler=worker.run_once,
+    )
 
 
 if __name__ == "__main__":

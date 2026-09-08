@@ -101,6 +101,20 @@ class ProcessingAttemptStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
+class MeetingPublicationStatus(str, enum.Enum):
+    AWAITING_APPROVAL = "awaiting_approval"
+    QUEUED = "queued"
+    RUNNING = "running"
+    PUBLISHED = "published"
+    FAILED = "failed"
+
+
+class PublicationVisionStatus(str, enum.Enum):
+    NOT_REQUESTED = "not_requested"
+    USED = "used"
+    UNSUPPORTED = "unsupported"
+
+
 class ProcessingParameterType(str, enum.Enum):
     STRING = "string"
     INTEGER = "integer"
@@ -331,6 +345,9 @@ class User(Base):
     uploaded_voices: Mapped[list[VoiceFile]] = relationship(
         back_populates="uploaded_by"
     )
+    uploaded_meeting_attachments: Mapped[list[MeetingAttachment]] = relationship(
+        back_populates="uploaded_by"
+    )
     history_events: Mapped[list[History]] = relationship(back_populates="actor")
     affected_history_events: Mapped[list[History]] = relationship(
         secondary=history_affected_users,
@@ -413,6 +430,18 @@ class Meeting(Base):
         back_populates="meeting",
         passive_deletes=True,
         order_by="VoiceFile.sequence_number",
+    )
+    attachments: Mapped[list[MeetingAttachment]] = relationship(
+        back_populates="meeting",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="MeetingAttachment.created_at",
+    )
+    publication: Mapped[MeetingPublication | None] = relationship(
+        back_populates="meeting",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
     )
 
     # Preserved convenience relationship: all voice-level Result rows that
@@ -617,6 +646,38 @@ class VoiceFile(Base):
         model or reprocessing a voice does not overwrite historical results.
         """
         return self.results[-1] if self.results else None
+
+
+class MeetingAttachment(Base):
+    """An image or PDF supplied as meeting context for final publication."""
+
+    __tablename__ = "meeting_attachments"
+    __table_args__ = (
+        UniqueConstraint(
+            "minio_bucket", "minio_key", name="uq_meeting_attachment_minio_object"
+        ),
+        CheckConstraint("size_bytes > 0", name="ck_meeting_attachment_size_positive"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    meeting_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    uploaded_by_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    minio_bucket: Mapped[str] = mapped_column(String(63), nullable=False)
+    minio_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    meeting: Mapped[Meeting] = relationship(back_populates="attachments")
+    uploaded_by: Mapped[User] = relationship(back_populates="uploaded_meeting_attachments")
 
 
 # ---------------------------------------------------------------------------
@@ -1092,6 +1153,76 @@ class MeetingResultArtifact(Base):
         secondary=history_affected_meeting_result_artifacts,
         back_populates="affected_meeting_result_artifacts",
     )
+
+
+class MeetingPublication(Base):
+    """Review gate and stable Outline document identity for one meeting."""
+
+    __tablename__ = "meeting_publications"
+    __table_args__ = (
+        UniqueConstraint("meeting_id", name="uq_meeting_publication_meeting"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    meeting_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    meeting_result_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("meeting_results.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    current_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("processing_jobs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    status: Mapped[MeetingPublicationStatus] = mapped_column(
+        _enum_type(MeetingPublicationStatus, "meeting_publication_status"),
+        nullable=False,
+        default=MeetingPublicationStatus.AWAITING_APPROVAL,
+        server_default=MeetingPublicationStatus.AWAITING_APPROVAL.value,
+        index=True,
+    )
+    destination_path: Mapped[str] = mapped_column(
+        String(1024), nullable=False, default="پروژه‌های کارآموزی/ASR test"
+    )
+    approved_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    attachment_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    vision_status: Mapped[PublicationVisionStatus] = mapped_column(
+        _enum_type(PublicationVisionStatus, "publication_vision_status"),
+        nullable=False,
+        default=PublicationVisionStatus.NOT_REQUESTED,
+        server_default=PublicationVisionStatus.NOT_REQUESTED.value,
+    )
+    outline_parent_document_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    outline_summary_document_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    outline_transcript_document_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    meeting: Mapped[Meeting] = relationship(back_populates="publication")
+    meeting_result: Mapped[MeetingResult | None] = relationship()
+    current_job: Mapped[ProcessingJob | None] = relationship(
+        foreign_keys=[current_job_id]
+    )
+    approved_by: Mapped[User | None] = relationship(foreign_keys=[approved_by_id])
 
 
 # ---------------------------------------------------------------------------

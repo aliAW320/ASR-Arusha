@@ -1,7 +1,7 @@
 import tomllib
 from pathlib import Path
 
-from app.main import app
+from app.main import BACKGROUND_WORKERS, app
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -54,15 +54,55 @@ def test_compose_keeps_root_exception_and_uses_docker_api_file():
     assert "qdrant" not in compose.lower()
 
 
-def test_asr_is_an_isolated_service_and_live_benchmark_is_excluded_from_ci():
-    compose = (PROJECT_ROOT / "docker-compose.yml").read_text()
-    dockerfile = (PROJECT_ROOT / "Docker" / "asr.Dockerfile").read_text()
-    workflow = (PROJECT_ROOT / ".github" / "workflows" / "ci-cd.yml").read_text()
+def test_only_api_ui_and_diarization_have_dockerfiles_and_compose_services():
+    # asr, cleaner, meeting-composer, mcp-worker, and the outbox dispatcher
+    # all run as background asyncio tasks inside the api process now (see
+    # app.main.BACKGROUND_WORKERS) instead of their own container. Only
+    # diarization keeps a separate image, because it alone carries heavy,
+    # non-portable ML dependencies (torch/pyannote) that the rest of the
+    # system must not be forced to ship.
+    dockerfiles = {path.name for path in (PROJECT_ROOT / "Docker").glob("*.Dockerfile")}
+    assert dockerfiles == {"api.Dockerfile", "ui.Dockerfile", "diarization.Dockerfile"}
 
-    assert "dockerfile: Docker/asr.Dockerfile" in compose
-    assert 'python", "-m", "asr.worker"' in dockerfile
-    assert "COPY src/asr ./asr" in dockerfile
-    assert "dockerfile: Docker/asr.Dockerfile" in workflow
+    compose = (PROJECT_ROOT / "docker-compose.yml").read_text()
+    for removed_service in (
+        "asr:",
+        "cleaner:",
+        "meeting-composer:",
+        "mcp-worker:",
+        "broker-dispatcher:",
+    ):
+        assert removed_service not in compose
+
+
+def test_background_workers_cover_every_merged_service():
+    names = {name for name, _ in BACKGROUND_WORKERS}
+    assert names == {
+        "broker-dispatcher",
+        "asr-worker",
+        "cleaner-worker",
+        "meeting-composer-worker",
+        "mcp-worker",
+    }
+    # Every runner must be the embeddable `run(settings)` coroutine, not the
+    # standalone `run_forever()` -- the latter reconfigures global logging
+    # and disposes the shared DB engine on exit, which would break the
+    # other workers/the API sharing that same process and engine.
+    for name, runner in BACKGROUND_WORKERS:
+        assert runner.__name__ == "run", name
+
+
+def test_merged_worker_packages_live_under_fast_backend_not_src():
+    # These packages used to ship in their own Docker image each; they now
+    # run inside the api process, so they belong next to app/ under
+    # fast_Backend/ rather than in the standalone src/ tree.
+    for package in ("asr", "cleaner", "meeting_composer", "mcp_worker", "alignment"):
+        assert (PROJECT_ROOT / "fast_Backend" / package / "__init__.py").is_file(), package
+        assert not (PROJECT_ROOT / "src" / package).exists(), package
+
+
+def test_asr_benchmark_marker_is_still_excluded_from_ci():
+    workflow = (PROJECT_ROOT / ".github" / "workflows" / "ci-cd.yml").read_text()
     assert '-m "not asr_benchmark"' in workflow
 
 
@@ -87,43 +127,24 @@ def test_pyannote_is_an_isolated_local_cpu_service():
     assert "nvidia-" not in requirements
 
 
-def test_cleaner_is_an_isolated_remote_api_worker():
+def test_cleaner_and_meeting_composer_carry_no_ml_runtime_deps():
+    # These now share the api image, so nothing about *their* code should
+    # be what pulls torch/pyannote in -- test_api_dependencies_do_not_include_ml_runtimes
+    # already guards pyproject.toml itself.
+    for package in ("cleaner", "meeting_composer", "asr", "mcp_worker"):
+        for source_file in (PROJECT_ROOT / "fast_Backend" / package).rglob("*.py"):
+            source = source_file.read_text()
+            assert "import torch" not in source, source_file
+            assert "pyannote" not in source.lower(), source_file
+
+
+def test_rabbitmq_topology_and_dispatcher_are_part_of_compose():
     compose = (PROJECT_ROOT / "docker-compose.yml").read_text()
-    dockerfile = (PROJECT_ROOT / "Docker" / "cleaner.Dockerfile").read_text()
-    workflow = (PROJECT_ROOT / ".github" / "workflows" / "ci-cd.yml").read_text()
-
-    assert "dockerfile: Docker/cleaner.Dockerfile" in compose
-    assert 'python", "-m", "cleaner.worker"' in dockerfile
-    assert "COPY src/cleaner ./cleaner" in dockerfile
-    assert "dockerfile: Docker/cleaner.Dockerfile" in workflow
-    assert "torch" not in dockerfile
-
-
-def test_meeting_composer_is_an_isolated_cpu_only_worker():
-    compose = (PROJECT_ROOT / "docker-compose.yml").read_text()
-    dockerfile = (PROJECT_ROOT / "Docker" / "meeting-composer.Dockerfile").read_text()
-    workflow = (PROJECT_ROOT / ".github" / "workflows" / "ci-cd.yml").read_text()
-
-    assert "dockerfile: Docker/meeting-composer.Dockerfile" in compose
-    assert 'python", "-m", "meeting_composer.worker"' in dockerfile
-    assert "COPY src/meeting_composer ./meeting_composer" in dockerfile
-    assert "dockerfile: Docker/meeting-composer.Dockerfile" in workflow
-    assert "torch" not in dockerfile
-    assert "pyannote" not in dockerfile.lower()
-
-
-def test_rabbitmq_topology_and_dispatcher_are_part_of_compose_and_ci():
-    compose = (PROJECT_ROOT / "docker-compose.yml").read_text()
-    dockerfile = (PROJECT_ROOT / "Docker" / "broker-dispatcher.Dockerfile").read_text()
-    workflow = (PROJECT_ROOT / ".github" / "workflows" / "ci-cd.yml").read_text()
     environment = (PROJECT_ROOT / ".env.example").read_text()
     project = (PROJECT_ROOT / "pyproject.toml").read_text()
 
     assert "rabbitmq:4.1-management-alpine" in compose
     assert "rabbitmq_data:/var/lib/rabbitmq" in compose
-    assert "dockerfile: Docker/broker-dispatcher.Dockerfile" in compose
-    assert 'python", "-m", "app.messaging.dispatcher"' in dockerfile
-    assert "dockerfile: Docker/broker-dispatcher.Dockerfile" in workflow
     assert "aio-pika" in project
     for queue_name in ("asr.queue", "diar.queue", "cleaning.queue", "mcp.queue"):
         assert queue_name in environment
@@ -136,25 +157,18 @@ def test_every_image_that_imports_app_services_processing_ships_its_dependencies
     # at module level, so importing *anything* from that module -- even just
     # queue_result_cleaning -- transitively requires both packages on the
     # image. Both are dependency-free by design (no ML imports at module
-    # level, verified below), which is exactly what makes them safe to share
-    # across every service without violating "services only talk through the
-    # API" -- unlike the real diarization worker code (Pyannote/torch),
-    # which must stay inside the diarization image alone (see the isolation
-    # test right after this one). Each Dockerfile copies its own file list
-    # independently, so each must be checked independently: a missing COPY
-    # here is a container that builds fine and then
-    # ModuleNotFoundError-crash-loops at runtime (caught live in this repo
-    # while wiring both of these features in).
-    for dockerfile_name in (
-        "api.Dockerfile",
-        "cleaner.Dockerfile",
-        "asr.Dockerfile",
-        "diarization.Dockerfile",
-        "meeting-composer.Dockerfile",
-    ):
+    # level, verified in test_cleaner_and_meeting_composer_carry_no_ml_runtime_deps),
+    # which is exactly what makes them safe to share -- unlike the real
+    # diarization worker code (Pyannote/torch), which must stay inside the
+    # diarization image alone (see the isolation test right after this one).
+    for dockerfile_name in ("api.Dockerfile", "diarization.Dockerfile"):
         dockerfile = (PROJECT_ROOT / "Docker" / dockerfile_name).read_text()
-        assert "COPY src/meeting_composer ./meeting_composer" in dockerfile, dockerfile_name
-        assert "COPY src/alignment ./alignment" in dockerfile, dockerfile_name
+        assert "COPY fast_Backend/meeting_composer ./meeting_composer" in dockerfile, dockerfile_name
+        assert "COPY fast_Backend/alignment ./alignment" in dockerfile, dockerfile_name
+
+    api_dockerfile = (PROJECT_ROOT / "Docker" / "api.Dockerfile").read_text()
+    for package in ("asr", "cleaner", "mcp_worker"):
+        assert f"COPY fast_Backend/{package} ./{package}" in api_dockerfile
 
 
 def test_diarization_service_code_stays_inside_its_own_image():
@@ -162,16 +176,16 @@ def test_diarization_service_code_stays_inside_its_own_image():
     # actual diarization service code (Pyannote provider, worker, chunking).
     # Every other service must talk to diarization results through the
     # database/object storage only, never by importing its worker code.
-    for dockerfile_name in ("api.Dockerfile", "cleaner.Dockerfile", "asr.Dockerfile", "meeting-composer.Dockerfile"):
-        dockerfile = (PROJECT_ROOT / "Docker" / dockerfile_name).read_text()
-        assert "src/diarization" not in dockerfile, dockerfile_name
+    api_dockerfile = (PROJECT_ROOT / "Docker" / "api.Dockerfile").read_text()
+    assert "diarization" not in api_dockerfile
 
-    for module in ("asr.worker", "cleaner.worker", "meeting_composer.worker"):
-        source = (PROJECT_ROOT / "src" / module.replace(".", "/")).with_suffix(".py").read_text()
-        assert not any(
-            line.startswith(("import diarization", "from diarization"))
-            for line in source.splitlines()
-        ), module
+    for package in ("asr", "cleaner", "meeting_composer", "mcp_worker"):
+        for source_file in (PROJECT_ROOT / "fast_Backend" / package).rglob("*.py"):
+            source = source_file.read_text()
+            assert not any(
+                line.startswith(("import diarization", "from diarization"))
+                for line in source.splitlines()
+            ), source_file
 
     processing_source = (
         PROJECT_ROOT / "fast_Backend" / "app" / "services" / "processing.py"

@@ -499,6 +499,19 @@ async def run_forever() -> None:
         level=settings.log_level,
         json_output=settings.json_logs_enabled,
     )
+    try:
+        await run(settings)
+    finally:
+        await close_database()
+
+
+async def run(settings: Settings) -> None:
+    """Run the cleaner consume loop until cancelled.
+
+    Does not touch global logging config or the shared DB engine, so it can
+    be embedded as a background task in another process (e.g. the API
+    process) alongside other workers that share the same engine.
+    """
     worker = CleanerWorker(
         session_factory=SessionFactory,
         storage=get_object_storage(),
@@ -510,15 +523,12 @@ async def run_forever() -> None:
         worker_name=worker.worker_name,
         model=settings.cleaner_model_name,
     )
-    try:
-        await consume_attempt_queue(
-            settings=settings,
-            queue_name=QueueNames.from_settings(settings).cleaning,
-            session_factory=SessionFactory,
-            handler=worker.run_once,
-        )
-    finally:
-        await close_database()
+    await consume_attempt_queue(
+        settings=settings,
+        queue_name=QueueNames.from_settings(settings).cleaning,
+        session_factory=SessionFactory,
+        handler=worker.run_once,
+    )
 
 
 if __name__ == "__main__":

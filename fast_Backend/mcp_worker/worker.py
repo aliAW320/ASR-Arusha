@@ -648,14 +648,13 @@ class MCPWorker:
         return True
 
 
-async def run_forever() -> None:
-    settings = get_settings()
-    configure_logging(
-        service="mcp-worker",
-        environment=settings.app_env,
-        level=settings.log_level,
-        json_output=settings.json_logs_enabled,
-    )
+async def run(settings: Settings) -> None:
+    """Run the MCP publication consume loop until cancelled.
+
+    Does not touch global logging config or the shared DB engine, so it can
+    be embedded as a background task in another process (e.g. the API
+    process) alongside other workers that share the same engine.
+    """
     worker = MCPWorker(
         session_factory=SessionFactory,
         storage=get_object_storage(),
@@ -668,13 +667,25 @@ async def run_forever() -> None:
         worker_name=worker.worker_name,
         queue=queue_name,
     )
+    await consume_attempt_queue(
+        settings=settings,
+        queue_name=queue_name,
+        session_factory=SessionFactory,
+        handler=lambda attempt_id: worker.run_once(attempt_id),
+    )
+
+
+async def run_forever() -> None:
+    """Standalone entrypoint: owns logging setup and DB engine teardown."""
+    settings = get_settings()
+    configure_logging(
+        service="mcp-worker",
+        environment=settings.app_env,
+        level=settings.log_level,
+        json_output=settings.json_logs_enabled,
+    )
     try:
-        await consume_attempt_queue(
-            settings=settings,
-            queue_name=queue_name,
-            session_factory=SessionFactory,
-            handler=lambda attempt_id: worker.run_once(attempt_id),
-        )
+        await run(settings)
     finally:
         await close_database()
 

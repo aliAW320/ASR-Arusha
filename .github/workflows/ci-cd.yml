@@ -79,30 +79,10 @@ jobs:
             local_image: asr-arusha-ui:ci
             registry_image: asr-arusha-ui
             run_compose_integration: false
-          - name: asr
-            dockerfile: Docker/asr.Dockerfile
-            local_image: asr-arusha-worker:ci
-            registry_image: asr-arusha-worker
-            run_compose_integration: false
           - name: diarization
             dockerfile: Docker/diarization.Dockerfile
             local_image: asr-arusha-diarization:ci
             registry_image: asr-arusha-diarization
-            run_compose_integration: false
-          - name: cleaner
-            dockerfile: Docker/cleaner.Dockerfile
-            local_image: asr-arusha-cleaner:ci
-            registry_image: asr-arusha-cleaner
-            run_compose_integration: false
-          - name: meeting-composer
-            dockerfile: Docker/meeting-composer.Dockerfile
-            local_image: asr-arusha-meeting-composer:ci
-            registry_image: asr-arusha-meeting-composer
-            run_compose_integration: false
-          - name: broker-dispatcher
-            dockerfile: Docker/broker-dispatcher.Dockerfile
-            local_image: asr-arusha-broker-dispatcher:ci
-            registry_image: asr-arusha-broker-dispatcher
             run_compose_integration: false
 
     steps:

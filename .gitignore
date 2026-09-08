@@ -11,3 +11,5 @@ test/audio_test
 .agents/
 node_modules/
 data/huggingface-cache/
+backups/
+__pycache__/

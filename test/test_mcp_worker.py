@@ -8,6 +8,8 @@ import pymupdf
 import pytest
 from sqlalchemy import select
 
+from pydantic import SecretStr
+
 from app.config import get_settings
 from app.models import (
     MeetingArtifactType,
@@ -507,7 +509,17 @@ async def _approve(client, meeting_id, headers, *, path="پروژه‌های ک�
 
 
 def _build_worker(session_factory, storage):
-    return MCPWorker(session_factory=session_factory, storage=storage, settings=get_settings())
+    # transcript_api_key/kb_api_key default to None unless a real .env sets
+    # them; the worker requires both configured before it even reaches the
+    # (faked) provider/client, so force dummy values here rather than relying
+    # on whatever secrets happen to be in the local environment.
+    settings = get_settings().model_copy(
+        update={
+            "transcript_api_key": SecretStr("test-transcript-key"),
+            "kb_api_key": SecretStr("test-kb-key"),
+        }
+    )
+    return MCPWorker(session_factory=session_factory, storage=storage, settings=settings)
 
 
 @pytest.mark.asyncio

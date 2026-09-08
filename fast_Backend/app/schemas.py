@@ -3,7 +3,13 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
-from .models import MeetingMemberRole, UserRole, VoiceStatus
+from .models import (
+    MeetingMemberRole,
+    MeetingPublicationStatus,
+    PublicationVisionStatus,
+    UserRole,
+    VoiceStatus,
+)
 
 
 class RegisterRequest(BaseModel):
@@ -276,3 +282,45 @@ class MeetingTranscriptResponse(BaseModel):
     processing_error: dict | None = None
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+class MeetingAttachmentResponse(BaseModel):
+    id: uuid.UUID
+    meeting_id: uuid.UUID
+    uploaded_by_id: uuid.UUID
+    original_filename: str
+    content_type: str
+    size_bytes: int
+    checksum_sha256: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ApproveMeetingPublicationRequest(BaseModel):
+    destination_path: str = Field(min_length=1, max_length=1024)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class MeetingPublicationResponse(BaseModel):
+    id: uuid.UUID | None = None
+    meeting_id: uuid.UUID
+    meeting_result_id: uuid.UUID | None = None
+    current_job_id: uuid.UUID | None = None
+    status: MeetingPublicationStatus
+    destination_path: str
+    approved_by_id: uuid.UUID | None = None
+    approved_at: datetime | None = None
+    attachment_ids: list[str] = Field(default_factory=list)
+    vision_status: PublicationVisionStatus = PublicationVisionStatus.NOT_REQUESTED
+    outline_parent_document_id: str | None = None
+    outline_summary_document_id: str | None = None
+    outline_transcript_document_id: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    completed_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)

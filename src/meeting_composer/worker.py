@@ -18,6 +18,8 @@ from app.models import (
     DiarizationSpeaker,
     Meeting,
     MeetingArtifactType,
+    MeetingPublication,
+    MeetingPublicationStatus,
     MeetingResult,
     MeetingResultArtifact,
     MeetingResultSource,
@@ -239,6 +241,30 @@ class MeetingComposerWorker:
                 attempt.status = ProcessingAttemptStatus.SUCCEEDED
                 attempt.finished_at = now
                 meeting_result.completed_at = now
+                publication = await session.scalar(
+                    select(MeetingPublication).where(
+                        MeetingPublication.meeting_id == item.meeting_id
+                    )
+                )
+                if publication is None:
+                    publication = MeetingPublication(
+                        meeting=meeting,
+                        meeting_result=meeting_result,
+                        destination_path=self.settings.meeting_publication_default_path,
+                    )
+                    session.add(publication)
+                elif publication.status not in {
+                    MeetingPublicationStatus.QUEUED,
+                    MeetingPublicationStatus.RUNNING,
+                }:
+                    publication.meeting_result = meeting_result
+                    publication.status = MeetingPublicationStatus.AWAITING_APPROVAL
+                    publication.approved_by_id = None
+                    publication.approved_at = None
+                    publication.current_job_id = None
+                    publication.error_code = None
+                    publication.error_message = None
+                    publication.completed_at = None
                 add_history_event(
                     session,
                     event_type="meeting_composition.succeeded",
@@ -252,6 +278,8 @@ class MeetingComposerWorker:
                     affected_meetings=[meeting] if meeting else [],
                     affected_meeting_results=[meeting_result],
                 )
+               
+               
                 await session.commit()
         except Exception:
             try:

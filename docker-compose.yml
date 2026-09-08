@@ -111,6 +111,25 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  mcp-worker:
+    build:
+      context: .
+      dockerfile: Docker/mcp.Dockerfile
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      api:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
   meeting-composer:
     build:
       context: .

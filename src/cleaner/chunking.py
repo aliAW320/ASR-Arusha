@@ -9,6 +9,22 @@ class CleanerChunk:
     core_ids: frozenset[str]
 
 
+def model_segment(segment: dict[str, Any]) -> dict[str, Any]:
+    """Return exactly the segment fields sent to the cleaner model."""
+    return {
+        "id": str(segment["id"]),
+        "start_ms": int(segment["start_ms"]),
+        "end_ms": int(segment["end_ms"]),
+        "speaker_id": str(segment.get("speaker_id") or ""),
+        "speaker_ids": [str(item) for item in segment.get("speaker_ids") or []],
+        "text": str(segment.get("text") or ""),
+    }
+
+
+def model_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [model_segment(segment) for segment in segments]
+
+
 def dynamic_overlap_segments(
     segments: list[dict[str, Any]],
     *,
@@ -32,7 +48,9 @@ def dynamic_overlap_segments(
 
 
 def _segment_size(segment: dict[str, Any]) -> int:
-    return len(json.dumps(segment, ensure_ascii=False, separators=(",", ":")))
+    return len(
+        json.dumps(model_segment(segment), ensure_ascii=False, separators=(",", ":"))
+    )
 
 
 def build_cleaner_chunks(

@@ -56,8 +56,24 @@ async def handle_attempt_message(
     try:
         worked = await handler(attempt_id)
         if not worked:
-            # A redelivery after the attempt transaction committed is safe.
-            await message.ack()
+            async with session_factory() as session:
+                attempt = await session.get(ProcessingAttempt, attempt_id)
+            if (
+                attempt is not None
+                and attempt.status == ProcessingAttemptStatus.QUEUED
+            ):
+                # The delivery may have raced with another transaction holding
+                # the attempt row. Never acknowledge work that is still queued.
+                logger.warning(
+                    "broker_attempt_not_claimed",
+                    "Queued processing attempt was not claimed; requeueing delivery",
+                    queue=queue_name,
+                    attempt_id=str(attempt_id),
+                )
+                await message.nack(requeue=True)
+            else:
+                # Missing/non-queued attempts are duplicate or stale deliveries.
+                await message.ack()
             return
         async with session_factory() as session:
             attempt = await session.get(ProcessingAttempt, attempt_id)

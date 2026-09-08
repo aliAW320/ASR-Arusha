@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import func, select
@@ -12,6 +13,8 @@ from app.models import (
     History,
     Meeting,
     MeetingArtifactType,
+    MeetingPublication,
+    MeetingPublicationStatus,
     MeetingResult,
     MeetingResultArtifact,
     MeetingResultSource,
@@ -1399,3 +1402,59 @@ async def test_meeting_processing_endpoint_includes_the_compose_job(
         f"/processing/jobs/{compose_job['id']}", headers=authorization(outsider)
     )
     assert denied.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_recomposing_a_published_meeting_requires_approval_again(
+    client, session_factory
+):
+    """A Meeting already published to the KB must go back to
+    'awaiting approval' when its content changes (a new composed version),
+    per the approval-invalidation rule -- the previous approval no longer
+    covers the new content."""
+    owner, meeting, voices = await _meeting_with_finished_voices(
+        client, session_factory, "recompose-invalidate@example.com"
+    )
+    composer_worker = MeetingComposerWorker(
+        session_factory=session_factory, storage=client.storage, settings=get_settings()
+    )
+    assert await composer_worker.run_once() is True
+
+    async with session_factory() as session:
+        first_result_id = await session.scalar(select(MeetingResult.id))
+        publication = await session.scalar(select(MeetingPublication))
+        assert publication is not None
+        assert publication.meeting_result_id == first_result_id
+        assert publication.status == MeetingPublicationStatus.AWAITING_APPROVAL
+        # Simulate a completed approval + KB publish for the first version.
+        publication.status = MeetingPublicationStatus.PUBLISHED
+        publication.approved_by_id = uuid.UUID(owner["user"]["id"])
+        publication.approved_at = datetime.now(timezone.utc)
+        publication.outline_parent_document_id = "doc-parent-1"
+        publication.outline_summary_document_id = "doc-summary-1"
+        publication.outline_transcript_document_id = "doc-transcript-1"
+        await session.commit()
+
+    recompose = await client.post(
+        f"/meetings/{meeting['id']}/compose",
+        headers=authorization(owner),
+        json={"force_new_version": True},
+    )
+    assert recompose.status_code == 202, recompose.text
+    assert await composer_worker.run_once() is True
+
+    async with session_factory() as session:
+        result_ids = (await session.scalars(select(MeetingResult.id))).all()
+        assert len(result_ids) == 2
+        second_result_id = next(rid for rid in result_ids if rid != first_result_id)
+        publication = await session.scalar(select(MeetingPublication))
+        assert publication.meeting_result_id == second_result_id
+        assert publication.status == MeetingPublicationStatus.AWAITING_APPROVAL
+        assert publication.approved_by_id is None
+        assert publication.approved_at is None
+        # The previous KB document identity is preserved so the next approved
+        # publish updates the same Outline documents instead of duplicating
+        # them (idempotent re-publish).
+        assert publication.outline_parent_document_id == "doc-parent-1"
+        assert publication.outline_summary_document_id == "doc-summary-1"
+        assert publication.outline_transcript_document_id == "doc-transcript-1"

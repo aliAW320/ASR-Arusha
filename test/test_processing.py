@@ -339,6 +339,9 @@ async def test_diarization_worker_finishes_pipeline_and_exposes_speaker_transcri
             ProcessingStage.MEETING_COMPOSE,
         }
         assert labels == {"SPEAKER_00", "SPEAKER_01"}
+        # Cleaning completing (even for the whole meeting) must not push
+        # straight to the KB: publication now waits for an explicit human
+        # approval on the Meeting, so no mcp.queue work exists yet.
         mcp_messages = (
             await session.scalars(
                 select(BrokerOutboxMessage).where(
@@ -346,12 +349,7 @@ async def test_diarization_worker_finishes_pipeline_and_exposes_speaker_transcri
                 )
             )
         ).all()
-        assert len(mcp_messages) == 1
-        assert mcp_messages[0].payload["voice_id"] == voice["id"]
-        assert mcp_messages[0].payload["result_id"] == result["id"]
-        assert mcp_messages[0].payload["artifact_key"].endswith(
-            "/cleaned-transcript.json"
-        )
+        assert mcp_messages == []
 
 
 class SegmentOnlyProvider:

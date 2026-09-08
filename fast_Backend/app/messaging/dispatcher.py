@@ -1,6 +1,5 @@
 import asyncio
 import json
-import uuid
 from datetime import datetime, timedelta, timezone
 
 import aio_pika
@@ -10,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..database import SessionFactory, close_database
-from ..models import BrokerOutboxMessage, ProcessingAttempt
+from ..models import BrokerOutboxMessage
 from ..observability.logging import configure_logging, get_logger
 from .topology import PROCESSING_EXCHANGE, declare_topology
 
@@ -75,11 +74,6 @@ async def _publish_next(
             outbox.published_at = datetime.now(timezone.utc)
             outbox.publish_attempts += 1
             outbox.last_error = None
-            attempt_id = outbox.payload.get("attempt_id")
-            if attempt_id:
-                attempt = await session.get(ProcessingAttempt, uuid.UUID(str(attempt_id)))
-                if attempt is not None and attempt.queue_task_id is None:
-                    attempt.queue_task_id = str(outbox.id)
             return True
 
 

@@ -15,6 +15,7 @@ def queue_for_stage(stage: ProcessingStage, settings: Settings) -> str:
         ProcessingStage.TRANSCRIPTION: names.asr,
         ProcessingStage.DIARIZATION: names.diar,
         ProcessingStage.CLEANING: names.cleaning,
+        ProcessingStage.MINUTES_GENERATION: names.mcp,
     }
     try:
         return mapping[stage]
@@ -31,6 +32,7 @@ def enqueue_message(
     delay_seconds: float = 0,
 ) -> BrokerOutboxMessage:
     message = BrokerOutboxMessage(
+        id=uuid.uuid4(),
         queue_name=queue_name,
         payload=payload,
         deduplication_key=deduplication_key,
@@ -50,7 +52,7 @@ def enqueue_attempt(
 ) -> BrokerOutboxMessage:
     if attempt.id is None or attempt.job_id is None:
         raise ValueError("Attempt must be flushed before it can be queued")
-    return enqueue_message(
+    message = enqueue_message(
         session,
         queue_name=queue_for_stage(stage, settings),
         payload={
@@ -61,27 +63,9 @@ def enqueue_attempt(
         deduplication_key=f"attempt:{attempt.id}",
         delay_seconds=settings.rabbitmq_retry_delay_seconds if retry else 0,
     )
-
-
-def enqueue_mcp(
-    session: AsyncSession,
-    settings: Settings,
-    *,
-    meeting_id: uuid.UUID | None,
-    voice_id: uuid.UUID,
-    result_id: uuid.UUID,
-    artifact_bucket: str,
-    artifact_key: str,
-) -> BrokerOutboxMessage:
-    return enqueue_message(
-        session,
-        queue_name=QueueNames.from_settings(settings).mcp,
-        payload={
-            "meeting_id": str(meeting_id) if meeting_id else None,
-            "voice_id": str(voice_id),
-            "result_id": str(result_id),
-            "artifact_bucket": artifact_bucket,
-            "artifact_key": artifact_key,
-        },
-        deduplication_key=f"mcp:result:{result_id}",
-    )
+    # Record the durable message identity in the same transaction that creates
+    # the attempt/outbox row. The dispatcher must not lock the attempt after
+    # publishing: RabbitMQ can deliver before that transaction commits, causing
+    # a SKIP LOCKED worker claim to miss the attempt and lose the delivery.
+    attempt.queue_task_id = str(message.id)
+    return message

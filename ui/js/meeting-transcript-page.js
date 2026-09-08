@@ -53,7 +53,7 @@ function renderSources(sources) {
     ? sources
         .map(
           (source) =>
-            `<div class="list-row"><div class="list-row-main"><span class="file-icon">♫</span><div><strong>فایل ${source.position + 1}</strong><small>ترتیب جلسه ${
+            `<div class="list-row"><div class="list-row-main"><span class="file-icon"><svg class="icon"><use href="#i-mic"/></svg></span><div><strong>فایل ${source.position + 1}</strong><small>ترتیب جلسه ${
               source.voice_sequence_snapshot ?? "—"
             } · شروع ${formatTime(source.source_offset_ms)} · مدت ${formatTime(
               source.source_duration_ms
@@ -139,7 +139,7 @@ async function loadVersions() {
   versions = await api(`/meetings/${encodeURIComponent(meetingId)}/results`);
   const button = $("#recompose-button");
   button.classList.remove("hidden");
-  button.textContent = versions.length ? "ترکیب مجدد" : "شروع ترکیب";
+  $("#recompose-button-label").textContent = versions.length ? "ترکیب مجدد" : "شروع ترکیب";
   if (!versions.length) {
     $("#version-select").innerHTML = "";
     $("#meeting-sources").innerHTML = "";
@@ -152,12 +152,16 @@ async function loadVersions() {
   await loadSelectedVersion();
 }
 
+function attachmentIcon(contentType) {
+  return contentType === "application/pdf" ? "file-pdf" : "image";
+}
+
 function renderAttachments(attachments, publication) {
   const locked = ["queued", "running"].includes(publication.status);
   $("#attachment-input").disabled = locked;
   $("#attachment-list").innerHTML = attachments.length
-    ? attachments.map((attachment) => `<div class="list-row"><div class="list-row-main"><span class="file-icon" aria-hidden="true">▧</span><div><strong>${escapeHtml(attachment.original_filename)}</strong><small>${escapeHtml(attachment.content_type)} · ${(attachment.size_bytes / 1048576).toFixed(2)} مگابایت</small></div></div><button class="delete-icon" type="button" aria-label="حذف ${escapeHtml(attachment.original_filename)}" data-delete-attachment="${attachment.id}" ${locked ? "disabled" : ""}>×</button></div>`).join("")
-    : `<div class="empty-state"><span aria-hidden="true">▧</span><p>پیوستی برای این جلسه ثبت نشده است.</p></div>`;
+    ? attachments.map((attachment) => `<div class="list-row"><div class="list-row-main"><span class="file-icon"><svg class="icon"><use href="#i-${attachmentIcon(attachment.content_type)}"/></svg></span><div><strong>${escapeHtml(attachment.original_filename)}</strong><small>${escapeHtml(attachment.content_type)} · ${(attachment.size_bytes / 1048576).toFixed(2)} مگابایت</small></div></div><button class="delete-icon" type="button" aria-label="حذف ${escapeHtml(attachment.original_filename)}" data-delete-attachment="${attachment.id}" ${locked ? "disabled" : ""}><svg class="icon"><use href="#i-trash"/></svg></button></div>`).join("")
+    : `<div class="empty-state"><svg class="icon"><use href="#i-paperclip"/></svg><p>پیوستی برای این جلسه ثبت نشده است.</p></div>`;
 }
 
 function renderPublication(publication) {
@@ -169,7 +173,7 @@ function renderPublication(publication) {
   $("#destination-path").disabled = active;
   const button = $("#approve-publication");
   button.disabled = active;
-  button.textContent = active ? "در حال انجام…" : status === "published" ? "تأیید و به‌روزرسانی دوباره" : status === "failed" ? "تلاش مجدد" : "تأیید نهایی و ارسال";
+  $("#approve-publication-label").textContent = active ? "در حال انجام…" : status === "published" ? "تأیید و به‌روزرسانی دوباره" : status === "failed" ? "تلاش مجدد" : "تأیید نهایی و ارسال";
 
   const error = $("#publication-error");
   if (status === "failed") {

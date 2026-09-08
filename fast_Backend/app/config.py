@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     diarization_device: Literal["cpu", "cuda"] = "cpu"
     diarization_max_attempts: int = Field(default=3, ge=1, le=10)
     diarization_worker_name: str = "diarization-worker"
+    # Hard off-switch: with this false the API reports diarization as
+    # unavailable even if a worker is running, and no voice is ever asked about.
+    diarization_enabled: bool = True
+    diarization_heartbeat_interval_seconds: float = Field(default=15.0, gt=0)
+    diarization_heartbeat_ttl_seconds: float = Field(default=60.0, gt=0)
 
     cleaner_model_name: str = "openai/Qwen3.8-27B"
     cleaner_request_timeout_seconds: int = Field(default=900, ge=30)

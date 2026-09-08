@@ -4,6 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 from .models import (
+    DiarizationDecision,
     MeetingMemberRole,
     MeetingPublicationStatus,
     PublicationVisionStatus,
@@ -125,6 +126,7 @@ class VoiceResponse(BaseModel):
     checksum_sha256: str | None
     sequence_number: int | None
     status: VoiceStatus
+    diarization_decision: DiarizationDecision
     uploaded_by_id: uuid.UUID
     uploaded_at: datetime
 
@@ -297,7 +299,7 @@ class MeetingAttachmentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class ApproveMeetingPublicationRequest(BaseModel):
+class UpdateMeetingPublicationRequest(BaseModel):
     destination_path: str = Field(min_length=1, max_length=1024)
 
     model_config = ConfigDict(extra="forbid")
@@ -310,8 +312,6 @@ class MeetingPublicationResponse(BaseModel):
     current_job_id: uuid.UUID | None = None
     status: MeetingPublicationStatus
     destination_path: str
-    approved_by_id: uuid.UUID | None = None
-    approved_at: datetime | None = None
     attachment_ids: list[str] = Field(default_factory=list)
     vision_status: PublicationVisionStatus = PublicationVisionStatus.NOT_REQUESTED
     outline_parent_document_id: str | None = None
@@ -322,5 +322,28 @@ class MeetingPublicationResponse(BaseModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None
     completed_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DiarizationAvailabilityResponse(BaseModel):
+    """Whether a diarization worker is alive right now."""
+
+    available: bool
+    enabled: bool
+    last_seen_at: datetime | None = None
+
+
+class DiarizationChoiceRequest(BaseModel):
+    enabled: bool
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class MeetingUploadResponse(BaseModel):
+    """What one multi-file meeting upload produced, split by what it became."""
+
+    voices: list[VoiceResponse] = Field(default_factory=list)
+    attachments: list[MeetingAttachmentResponse] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)

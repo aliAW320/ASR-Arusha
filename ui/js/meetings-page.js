@@ -3,7 +3,7 @@ import { $, escapeHtml, faNumber, formatDate, renderSidebar, requireUser, toast 
 
 function card(meeting) {
   const date = new Date(meeting.date);
-  return `<a class="meeting-card" href="/meeting.html?id=${meeting.id}"><div class="meeting-card-top"><div class="date-tile"><strong>${faNumber(date.getDate())}</strong><small>${new Intl.DateTimeFormat("fa-IR", { month: "short" }).format(date)}</small></div><span class="status-pill">آماده</span></div><h4>${escapeHtml(meeting.title)}</h4><p>${escapeHtml(meeting.description || "بدون توضیحات")}</p><footer>${formatDate(meeting.date, true)} · مشاهده جزئیات ←</footer></a>`;
+  return `<a class="meeting-card" href="/meeting.html?id=${meeting.id}"><div class="meeting-card-top"><div class="date-tile"><strong>${faNumber(date.getDate())}</strong><small>${new Intl.DateTimeFormat("fa-IR", { month: "short" }).format(date)}</small></div><span class="status-pill">آماده</span></div><h4>${escapeHtml(meeting.title)}</h4><p>${escapeHtml(meeting.description || "بدون توضیحات")}</p><footer>${formatDate(meeting.date, true)} · مشاهده جزئیات <svg class="icon"><use href="#i-arrow-next"/></svg></footer></a>`;
 }
 async function loadMeetings() {
   try {

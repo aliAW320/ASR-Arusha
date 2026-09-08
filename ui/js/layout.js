@@ -1,4 +1,7 @@
 import { api, clearSession, getStoredUser, getToken } from "./api.js";
+import { icon, mountIconSprite } from "./icons.js";
+
+mountIconSprite();
 
 export const $ = (selector, root = document) => root.querySelector(selector);
 export const faNumber = (value) => Number(value || 0).toLocaleString("fa-IR");
@@ -28,7 +31,15 @@ export function renderSidebar(user = getStoredUser(), active = "meetings") {
   const sidebar = $("[data-sidebar]");
   if (!sidebar || !user) return;
   const name = user.full_name || user.email.split("@")[0];
-  sidebar.innerHTML = `<div class="brand"><div class="brand-mark small">هـ</div><div><strong>هم‌نشین</strong><small>فضای جلسات شما</small></div></div><nav><a class="nav-item ${active === "meetings" ? "active" : ""}" href="/meetings.html"><span>◫</span> جلسه‌ها</a>${user.role === "admin" ? `<a class="nav-item ${active === "history" ? "active" : ""}" href="/history.html"><span>⌁</span> تاریخچه سامانه</a>` : ""}</nav><div class="sidebar-foot"><div class="user-chip"><span>${escapeHtml(name.slice(0, 1))}</span><div><strong>${escapeHtml(name)}</strong><small>${escapeHtml(user.email)}</small></div></div><button id="logout-button" class="icon-button" title="خروج">↪</button></div>`;
+  sidebar.innerHTML = `<div class="brand"><div class="brand-mark">H</div><div><strong>هم‌نشین</strong><small>Meeting Intelligence</small></div></div><div class="signal-rail" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><nav aria-label="ناوبری اصلی"><a class="nav-item ${active === "meetings" ? "active" : ""}" ${active === "meetings" ? 'aria-current="page"' : ""} href="/meetings.html">${icon("meetings")}<span>جلسه‌ها</span></a>${user.role === "admin" ? `<a class="nav-item ${active === "history" ? "active" : ""}" ${active === "history" ? 'aria-current="page"' : ""} href="/history.html">${icon("history")}<span>تاریخچه سامانه</span></a>` : ""}</nav><div class="sidebar-foot"><div class="user-chip"><span>${escapeHtml(name.slice(0, 1))}</span><div><strong>${escapeHtml(name)}</strong><small>${escapeHtml(user.email)}</small></div></div><button id="logout-button" class="icon-button" title="خروج" aria-label="خروج از حساب">${icon("logout")}</button></div>`;
   $("#logout-button").addEventListener("click", () => { clearSession(); location.replace("/login.html"); });
-  $("[data-mobile-menu]")?.addEventListener("click", () => sidebar.classList.toggle("open"));
+  const menuButton = $("[data-mobile-menu]");
+  const overlay = $("[data-sidebar-overlay]");
+  const setMenu = (open) => {
+    sidebar.classList.toggle("open", open);
+    overlay?.classList.toggle("visible", open);
+    menuButton?.setAttribute("aria-expanded", String(open));
+  };
+  menuButton?.addEventListener("click", () => setMenu(!sidebar.classList.contains("open")));
+  overlay?.addEventListener("click", () => setMenu(false));
 }

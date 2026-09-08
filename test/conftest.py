@@ -97,3 +97,28 @@ async def register_user(client: AsyncClient, email: str, password: str = "passwo
 
 def authorization(auth_response: dict) -> dict[str, str]:
     return {"Authorization": f"Bearer {auth_response['access_token']}"}
+
+
+async def mark_diarization_available(session_factory):
+    """Pretend a diarization worker is alive, so uploads are offered the choice.
+
+    Without a heartbeat the backend marks new voices `unavailable` and runs
+    ASR -> cleaning with no speakers at all, so any test that wants the
+    diarized pipeline has to declare that a worker exists.
+    """
+    from app.services.diarization import DIARIZATION_SERVICE, record_heartbeat
+
+    async with session_factory() as session:
+        await record_heartbeat(session, DIARIZATION_SERVICE)
+        await session.commit()
+
+
+async def accept_diarization(client, auth_response: dict, voice_id: str):
+    """Answer "yes, split by speaker" for a voice, the way the user would."""
+    response = await client.post(
+        f"/voices/{voice_id}/diarization",
+        headers=authorization(auth_response),
+        json={"enabled": True},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()

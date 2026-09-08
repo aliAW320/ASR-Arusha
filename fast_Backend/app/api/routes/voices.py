@@ -12,11 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...config import get_settings
 from ...database import get_db_session
 from ...dependencies import get_current_user
-from ...models import Meeting, User, VoiceFile
+from ...models import Meeting, MeetingAttachment, User, VoiceFile
 from ...observability.context import bind_log_context
 from ...observability.events import LogEvent
 from ...observability.logging import get_logger
-from ...schemas import VoiceResponse
+from ...schemas import MeetingUploadResponse, VoiceResponse
 from ...services.audit import add_history_event
 from ...services.permissions import (
     MeetingPermission,
@@ -24,6 +24,13 @@ from ...services.permissions import (
     require_meeting_permission,
 )
 from ...services.processing import cancel_voice_processing, queue_voice_transcription
+from ...services.uploads import (
+    UploadRejected,
+    is_attachment,
+    is_audio,
+    store_attachment,
+    store_voice,
+)
 from ...storage.base import ObjectStorage
 from ...storage.minio import get_object_storage
 
@@ -210,6 +217,111 @@ async def upload_voice(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="Voice metadata could not be saved after three attempts",
     ) from last_error
+
+
+@router.post(
+    "/meetings/{meeting_id}/files",
+    response_model=MeetingUploadResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_meeting_files(
+    meeting_id: uuid.UUID,
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    storage: Annotated[ObjectStorage, Depends(get_object_storage)],
+    uploads: Annotated[list[UploadFile], File()],
+):
+    """Accept a meeting's audio and its supporting files in one request.
+
+    Everything for a meeting is uploaded to the same place: audio becomes a
+    voice and starts transcribing, while PNG/JPEG/PDF become attachments that
+    the summarizer picks up when the meeting is published. The batch is
+    all-or-nothing -- one rejected file fails the request and no partial set
+    is left behind -- so the caller never has to reason about which half of
+    an upload survived.
+    """
+    meeting = await require_meeting_permission(
+        session, current_user, meeting_id, MeetingPermission.MANAGE_VOICES
+    )
+    if not uploads:
+        raise HTTPException(status_code=422, detail="At least one file is required")
+
+    settings = get_settings()
+    written: list[tuple[str, str]] = []
+    voices: list[VoiceFile] = []
+    attachments: list[MeetingAttachment] = []
+    try:
+        for upload in uploads:
+            if is_audio(upload):
+                voice, key = await store_voice(
+                    session,
+                    storage,
+                    meeting=meeting,
+                    actor=current_user,
+                    upload=upload,
+                    settings=settings,
+                )
+                written.append(key)
+                voices.append(voice)
+            elif is_attachment(upload):
+                attachment, key = await store_attachment(
+                    session,
+                    storage,
+                    meeting=meeting,
+                    actor=current_user,
+                    upload=upload,
+                    settings=settings,
+                )
+                written.append(key)
+                attachments.append(attachment)
+            else:
+                raise UploadRejected(
+                    f"Unsupported file type for {upload.filename or 'upload'}:"
+                    " send audio, PNG, JPEG or PDF",
+                    status_code=415,
+                )
+
+        for voice in voices:
+            await queue_voice_transcription(session, voice, settings)
+
+        add_history_event(
+            session,
+            event_type="meeting_files.uploaded",
+            description="Meeting files uploaded",
+            actor=current_user,
+            request=request,
+            event_data={
+                "voice_count": len(voices),
+                "attachment_count": len(attachments),
+            },
+            affected_meetings=[meeting],
+            affected_voices=list(voices),
+        )
+        await session.commit()
+    except Exception as error:
+        await session.rollback()
+        for bucket, object_key in written:
+            try:
+                await storage.remove_object(bucket, object_key)
+            except Exception:
+                logger.exception(
+                    LogEvent.UPLOAD_CLEANUP_FAILED,
+                    "Could not remove a partially uploaded meeting file",
+                    bucket=bucket,
+                    object_key=object_key,
+                )
+        if isinstance(error, UploadRejected):
+            raise HTTPException(
+                status_code=error.status_code, detail=str(error)
+            ) from error
+        raise
+
+    for voice in voices:
+        await session.refresh(voice)
+    for attachment in attachments:
+        await session.refresh(attachment)
+    return MeetingUploadResponse(voices=voices, attachments=attachments)
 
 
 @router.get("/meetings/{meeting_id}/voices", response_model=list[VoiceResponse])

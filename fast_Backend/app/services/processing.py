@@ -8,7 +8,7 @@ from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
-from alignment.merge import align_transcript_to_speakers
+from alignment.merge import align_transcript_to_speakers, build_unattributed_transcript
 from alignment.types import DiarizationError, DiarizationTurn
 from meeting_composer.composer import FINGERPRINT_POLICY_VERSION, compute_offsets, compute_source_fingerprint
 
@@ -16,9 +16,13 @@ from ..config import Settings
 from ..messaging.outbox import enqueue_attempt
 from ..models import (
     BrokerOutboxMessage,
+    DiarizationDecision,
     ExternalIntegration,
     ExternalIntegrationKind,
     Meeting,
+    MeetingAttachment,
+    MeetingPublication,
+    MeetingPublicationStatus,
     MeetingResult,
     MeetingResultSource,
     ModelDefinition,
@@ -29,6 +33,7 @@ from ..models import (
     ProcessingAttemptStatus,
     ProcessingJob,
     ProcessingStage,
+    PublicationVisionStatus,
     Result,
     ResultArtifact,
     ResultArtifactType,
@@ -38,6 +43,7 @@ from ..models import (
 from ..schemas import ProcessingJobResponse
 from ..storage.base import ObjectStorage
 from .audit import add_history_event
+from .diarization import resolve_decision
 
 
 class MeetingCompositionError(ValueError):
@@ -340,12 +346,70 @@ async def queue_meeting_publication(
     return job
 
 
+async def start_meeting_publication(
+    session: AsyncSession,
+    meeting: Meeting,
+    meeting_result: MeetingResult,
+    settings: Settings,
+) -> ProcessingJob | None:
+    """Send a freshly composed meeting to summarization + the knowledge base.
+
+    Publication follows composition automatically -- there is no approval step
+    -- so this is called by the composer as soon as a meeting transcript is
+    complete. Returns None when a publication for this meeting is already
+    queued or running, so a recomposition landing mid-publish does not stomp
+    the run in flight.
+
+    The Outline document ids on an existing row are deliberately preserved:
+    they are what makes a re-publish update the same three documents instead
+    of growing a duplicate tree.
+    """
+    publication = await session.scalar(
+        select(MeetingPublication)
+        .where(MeetingPublication.meeting_id == meeting.id)
+        .with_for_update()
+    )
+    if publication is not None and publication.status in {
+        MeetingPublicationStatus.QUEUED,
+        MeetingPublicationStatus.RUNNING,
+    }:
+        return None
+
+    attachment_ids = [
+        str(value)
+        for value in await session.scalars(
+            select(MeetingAttachment.id)
+            .where(MeetingAttachment.meeting_id == meeting.id)
+            .order_by(MeetingAttachment.created_at, MeetingAttachment.id)
+        )
+    ]
+    if publication is None:
+        publication = MeetingPublication(
+            meeting=meeting,
+            destination_path=settings.meeting_publication_default_path,
+        )
+        session.add(publication)
+
+    publication.meeting_result = meeting_result
+    publication.attachment_ids = attachment_ids
+    publication.status = MeetingPublicationStatus.QUEUED
+    publication.vision_status = PublicationVisionStatus.NOT_REQUESTED
+    publication.error_code = None
+    publication.error_message = None
+    publication.completed_at = None
+
+    job = await queue_meeting_publication(session, meeting_result, settings)
+    publication.current_job = job
+    await session.flush()
+    return job
+
+
 async def queue_result_cleaning(
     session: AsyncSession,
     result: Result,
     settings: Settings,
     *,
-    depends_on: ProcessingJob,
+    depends_on: ProcessingJob | None,
 ) -> ProcessingJob:
     model, integration = await ensure_cleaner_registry(session, settings)
     job = ProcessingJob(
@@ -353,7 +417,7 @@ async def queue_result_cleaning(
         stage=ProcessingStage.CLEANING,
         model=model,
         integration=integration,
-        dependencies=[depends_on],
+        dependencies=[depends_on] if depends_on is not None else [],
     )
     attempt = ProcessingAttempt(
         job=job,
@@ -366,18 +430,51 @@ async def queue_result_cleaning(
     return job
 
 
+async def queue_result_diarization(
+    session: AsyncSession,
+    result: Result,
+    settings: Settings,
+) -> ProcessingJob:
+    """Queue diarization on its own, for a run that was already started.
+
+    Used when the answer to "do you want speaker separation?" arrives after
+    the upload already sent transcription on its way.
+    """
+    diarization_model = await ensure_diarization_registry(session, settings)
+    job = ProcessingJob(
+        result=result,
+        stage=ProcessingStage.DIARIZATION,
+        model=diarization_model,
+    )
+    attempt = ProcessingAttempt(
+        job=job,
+        attempt_number=1,
+        status=ProcessingAttemptStatus.QUEUED,
+    )
+    session.add_all([job, attempt])
+    await session.flush()
+    enqueue_attempt(session, attempt, ProcessingStage.DIARIZATION, settings)
+    return job
+
+
 async def _queue_transcription_and_diarization(
     session: AsyncSession,
     result: Result,
     settings: Settings,
-) -> tuple[ProcessingJob, ProcessingJob]:
-    """Queue TRANSCRIPTION and DIARIZATION as independent root jobs.
+    *,
+    with_diarization: bool,
+) -> tuple[ProcessingJob, ProcessingJob | None]:
+    """Queue TRANSCRIPTION, and DIARIZATION too when it was asked for.
 
     Both read the same source audio and neither depends on the other, so
     they can run in parallel or in either order -- whichever finishes second
     triggers alignment (see align_result_if_ready). This replaces the old
     diarization-depends-on-transcription chain, which forced diarization to
     wait even though it never actually needed the ASR output.
+
+    Transcription starts regardless of the diarization answer: it is useful on
+    its own, and holding it back would only make the user wait for a question
+    that does not concern it.
     """
     # Each job (and its attempt) is added to the session immediately after
     # construction, before the *next* ensure_*_registry call flushes: those
@@ -399,27 +496,108 @@ async def _queue_transcription_and_diarization(
     )
     session.add_all([transcription_job, transcription_attempt])
 
-    diarization_model = await ensure_diarization_registry(session, settings)
-    diarization_job = ProcessingJob(
-        result=result,
-        stage=ProcessingStage.DIARIZATION,
-        model=diarization_model,
-    )
-    diarization_attempt = ProcessingAttempt(
-        job=diarization_job,
-        attempt_number=1,
-        status=ProcessingAttemptStatus.QUEUED,
-    )
-    session.add_all([diarization_job, diarization_attempt])
+    diarization_job = None
+    diarization_attempt = None
+    if with_diarization:
+        diarization_model = await ensure_diarization_registry(session, settings)
+        diarization_job = ProcessingJob(
+            result=result,
+            stage=ProcessingStage.DIARIZATION,
+            model=diarization_model,
+        )
+        diarization_attempt = ProcessingAttempt(
+            job=diarization_job,
+            attempt_number=1,
+            status=ProcessingAttemptStatus.QUEUED,
+        )
+        session.add_all([diarization_job, diarization_attempt])
 
     await session.flush()
     enqueue_attempt(
         session, transcription_attempt, ProcessingStage.TRANSCRIPTION, settings
     )
-    enqueue_attempt(
-        session, diarization_attempt, ProcessingStage.DIARIZATION, settings
-    )
+    if diarization_attempt is not None:
+        enqueue_attempt(
+            session, diarization_attempt, ProcessingStage.DIARIZATION, settings
+        )
     return transcription_job, diarization_job
+
+
+async def _finish_without_diarization(
+    session: AsyncSession,
+    result: Result,
+    meeting_id: uuid.UUID | None,
+    settings: Settings,
+    storage: ObjectStorage,
+    transcript_artifact: ResultArtifact,
+) -> None:
+    """Hand the plain ASR transcript to cleaning, with no speakers attached.
+
+    The rest of the pipeline (cleaning, meeting composition, publication) is
+    written against one speaker-transcript artifact, so a run without
+    diarization fills the same slot rather than growing a parallel path
+    through every downstream stage. Every segment carries a single explicit
+    "unknown speaker" label -- honest about what was not measured, and still a
+    valid label for the composer, which requires one per segment.
+    """
+    existing = await session.scalar(
+        select(ResultArtifact.id).where(
+            ResultArtifact.result_id == result.id,
+            ResultArtifact.artifact_type == ResultArtifactType.ALIGNED_TRANSCRIPT_JSON,
+        )
+    )
+    if existing is not None:
+        return
+
+    buffer = io.BytesIO()
+    await storage.download_object(
+        transcript_artifact.minio_bucket, transcript_artifact.minio_key, buffer
+    )
+    transcript = json.loads(buffer.getvalue().decode("utf-8"))
+    unattributed = build_unattributed_transcript(transcript)
+
+    payload = json.dumps(unattributed, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    key = f"meetings/{meeting_id}/results/{result.id}/speaker-transcript.json"
+    await storage.put_object(
+        settings.minio_exports_bucket, key, io.BytesIO(payload), len(payload), "application/json"
+    )
+    try:
+        producer = (
+            await session.get(ProcessingJob, transcript_artifact.producer_job_id)
+            if transcript_artifact.producer_job_id is not None
+            else None
+        )
+        session.add(
+            ResultArtifact(
+                result=result,
+                artifact_type=ResultArtifactType.ALIGNED_TRANSCRIPT_JSON,
+                minio_bucket=settings.minio_exports_bucket,
+                minio_key=key,
+                content_type="application/json",
+                checksum_sha256=hashlib.sha256(payload).hexdigest(),
+                producer_job=producer,
+            )
+        )
+        cleaning_job = await queue_result_cleaning(
+            session, result, settings, depends_on=producer
+        )
+        add_history_event(
+            session,
+            event_type="processing.queued",
+            description="Transcript cleaning queued without speaker separation",
+            event_data={
+                "job_id": str(cleaning_job.id),
+                "stage": ProcessingStage.CLEANING.value,
+                "diarization": "skipped",
+            },
+        )
+        await session.flush()
+    except Exception:
+        try:
+            await storage.remove_object(settings.minio_exports_bucket, key)
+        except Exception:
+            pass
+        raise
 
 
 async def align_result_if_ready(
@@ -456,13 +634,32 @@ async def align_result_if_ready(
             ResultArtifact.artifact_type == ResultArtifactType.TRANSCRIPT_JSON,
         )
     )
+    if transcript_artifact is None:
+        return None
+
+    decision = await session.scalar(
+        select(VoiceFile.diarization_decision)
+        .join(Result, Result.voice_id == VoiceFile.id)
+        .where(Result.id == result.id)
+    )
+    if decision == DiarizationDecision.PENDING:
+        # A worker is alive and nobody has answered yet. Cleaning here would
+        # burn the one cleaning pass on a transcript with no speakers, so wait
+        # -- answering later calls straight back into this function.
+        return None
+    if decision in {DiarizationDecision.SKIPPED, DiarizationDecision.UNAVAILABLE}:
+        await _finish_without_diarization(
+            session, result, meeting_id, settings, storage, transcript_artifact
+        )
+        return None
+
     diarization_artifact = await session.scalar(
         select(ResultArtifact).where(
             ResultArtifact.result_id == result.id,
             ResultArtifact.artifact_type == ResultArtifactType.DIARIZATION_JSON,
         )
     )
-    if transcript_artifact is None or diarization_artifact is None:
+    if diarization_artifact is None:
         return None
 
     transcript_buffer = io.BytesIO()
@@ -608,8 +805,12 @@ async def queue_meeting_transcription(
     for voice in voices:
         result = Result(voice=voice)
         session.add(result)
+        voice.diarization_decision = await resolve_decision(session, voice, settings)
         transcription_job, _diarization_job = await _queue_transcription_and_diarization(
-            session, result, settings
+            session,
+            result,
+            settings,
+            with_diarization=voice.diarization_decision == DiarizationDecision.ENABLED,
         )
         voice.status = VoiceStatus.PENDING
         jobs.append(transcription_job)
@@ -623,15 +824,23 @@ async def queue_voice_transcription(
     voice: VoiceFile,
     settings: Settings,
 ) -> ProcessingJob:
-    """Create the first transcription and diarization run for a newly
-    uploaded voice. Returns the transcription job (the response shape
-    /meetings/{id}/process and upload callers already expect); the
-    diarization job is queued alongside it, independently.
+    """Create the first processing run for a newly uploaded voice.
+
+    Returns the transcription job (the response shape /meetings/{id}/process
+    and upload callers already expect). Diarization is queued alongside it
+    only when this voice already has a standing "yes"; otherwise the voice is
+    left on PENDING (a worker is alive, so someone will be asked) or
+    UNAVAILABLE (no worker, so nobody is asked and the run goes straight to
+    cleaning after transcription).
     """
     result = Result(voice=voice)
     session.add(result)
+    voice.diarization_decision = await resolve_decision(session, voice, settings)
     transcription_job, _diarization_job = await _queue_transcription_and_diarization(
-        session, result, settings
+        session,
+        result,
+        settings,
+        with_diarization=voice.diarization_decision == DiarizationDecision.ENABLED,
     )
     voice.status = VoiceStatus.PENDING
     await session.flush()

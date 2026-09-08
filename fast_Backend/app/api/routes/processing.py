@@ -12,6 +12,7 @@ from ...config import get_settings
 from ...database import get_db_session
 from ...dependencies import get_current_user
 from ...models import (
+    DiarizationDecision,
     ProcessingAttemptStatus,
     ProcessingJob,
     ProcessingStage,
@@ -20,15 +21,29 @@ from ...models import (
     User,
     VoiceFile,
 )
-from ...schemas import ProcessingJobResponse, ResultResponse, TranscriptResponse
+from ...schemas import (
+    DiarizationAvailabilityResponse,
+    DiarizationChoiceRequest,
+    ProcessingJobResponse,
+    ResultResponse,
+    TranscriptResponse,
+    VoiceResponse,
+)
 from ...services.audit import add_history_event
+from ...services.diarization import (
+    DIARIZATION_SERVICE,
+    diarization_is_available,
+    last_seen_at,
+)
 from ...services.permissions import MeetingPermission, is_admin, require_meeting_permission
 from ...services.processing import (
     JOB_LOAD_OPTIONS,
+    align_result_if_ready,
     load_meeting_processing_jobs,
     load_processing_job,
     processing_job_response,
     queue_meeting_transcription,
+    queue_result_diarization,
 )
 from ...storage.base import ObjectStorage
 from ...storage.minio import get_object_storage
@@ -117,6 +132,102 @@ async def get_processing_job(
     else:
         raise HTTPException(status_code=404, detail="Processing job not found")
     return processing_job_response(job)
+
+
+@router.get("/processing/diarization", response_model=DiarizationAvailabilityResponse)
+async def get_diarization_availability(
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+):
+    """Whether speaker separation can be offered for a new upload right now."""
+    settings = get_settings()
+    return DiarizationAvailabilityResponse(
+        available=await diarization_is_available(session, settings),
+        enabled=settings.diarization_enabled,
+        last_seen_at=await last_seen_at(session, DIARIZATION_SERVICE),
+    )
+
+
+@router.post("/voices/{voice_id}/diarization", response_model=VoiceResponse)
+async def choose_voice_diarization(
+    voice_id: uuid.UUID,
+    payload: DiarizationChoiceRequest,
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    storage: Annotated[ObjectStorage, Depends(get_object_storage)],
+):
+    """Answer "should this voice be split by speaker?" once, for this voice.
+
+    Saying yes queues diarization next to the transcription that is already
+    running; saying no releases cleaning as soon as transcription is done
+    (immediately, if it already is).
+    """
+    voice = await session.get(VoiceFile, voice_id)
+    if voice is None:
+        raise HTTPException(status_code=404, detail="Voice file not found")
+    await _require_voice_access(session, current_user, voice, MeetingPermission.MANAGE_VOICES)
+
+    if voice.diarization_decision in {
+        DiarizationDecision.ENABLED,
+        DiarizationDecision.SKIPPED,
+    }:
+        raise HTTPException(
+            status_code=409,
+            detail="Speaker separation for this voice has already been decided",
+        )
+
+    settings = get_settings()
+    result = await session.scalar(
+        select(Result)
+        .where(Result.voice_id == voice.id)
+        .order_by(Result.generated_at.desc(), Result.id.desc())
+        .limit(1)
+    )
+    if payload.enabled:
+        if not await diarization_is_available(session, settings):
+            raise HTTPException(
+                status_code=409,
+                detail="No diarization worker is available right now",
+            )
+        voice.diarization_decision = DiarizationDecision.ENABLED
+        if result is not None:
+            existing = await session.scalar(
+                select(ProcessingJob.id).where(
+                    ProcessingJob.result_id == result.id,
+                    ProcessingJob.stage == ProcessingStage.DIARIZATION,
+                )
+            )
+            if existing is None:
+                await queue_result_diarization(session, result, settings)
+    else:
+        voice.diarization_decision = DiarizationDecision.SKIPPED
+        if result is not None:
+            # Transcription may already be finished and parked waiting for this
+            # answer, in which case this releases cleaning right away.
+            await align_result_if_ready(
+                session, result, voice.meeting_id, settings, storage
+            )
+
+    add_history_event(
+        session,
+        event_type="processing.diarization_choice",
+        description=(
+            "Speaker separation enabled for a voice"
+            if payload.enabled
+            else "Speaker separation skipped for a voice"
+        ),
+        actor=current_user,
+        request=request,
+        event_data={
+            "voice_id": str(voice.id),
+            "decision": voice.diarization_decision.value,
+        },
+        affected_voices=[voice],
+    )
+    await session.commit()
+    await session.refresh(voice)
+    return voice
 
 
 @router.get("/voices/{voice_id}/results", response_model=list[ResultResponse])

@@ -1,4 +1,50 @@
-<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#102a2a"><title>جلسه‌ها | هم‌نشین</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/pages.css"></head><body>
-<div class="app-shell"><aside class="sidebar" data-sidebar></aside><section class="workspace"><header class="topbar"><button data-mobile-menu class="icon-button mobile-only">☰</button><div><p class="eyebrow">امروز</p><h2>جلسه‌های من</h2></div><button id="new-meeting-button" class="button primary">＋ جلسه جدید</button></header>
-<main><div class="overview-grid"><article class="metric-card accent"><span>جلسه‌های در دسترس</span><strong id="meeting-count">۰</strong><small>فضای فعال شما</small></article><article class="metric-card"><span>وضعیت سامانه</span><strong>آماده</strong><small>برای دریافت فایل صوتی</small></article><article class="quote-card"><p>«یک جلسه خوب، با یک تصمیم روشن تمام می‌شود.»</p><span>یادداشت امروز</span></article></div><div class="section-heading"><div><h3>آخرین جلسه‌ها</h3><p>برای مشاهده اعضا و فایل‌ها یک جلسه را باز کنید.</p></div><button id="refresh-meetings" class="text-button">تازه‌سازی ↻</button></div><div id="meetings-grid" class="meeting-grid"></div><div id="meetings-empty" class="empty-state hidden"><span>◌</span><h3>هنوز جلسه‌ای ندارید</h3><p>اولین جلسه را بسازید و اعضا و فایل‌های صوتی را اضافه کنید.</p><button class="button primary" data-open-modal>ساخت اولین جلسه</button></div></main></section></div>
-<dialog id="meeting-modal" class="modal"><form id="meeting-form"><div class="modal-heading"><div><p class="eyebrow">فضای گفتگو</p><h2>جلسه جدید</h2></div><button type="button" class="icon-button" data-close-modal>×</button></div><label>عنوان جلسه<input name="title" required maxlength="255" placeholder="مثلاً جلسه برنامه‌ریزی محصول"></label><label>توضیحات<textarea name="description" rows="4" placeholder="موضوع و هدف جلسه"></textarea></label><label>زمان جلسه<input name="date" type="datetime-local"></label><div class="modal-actions"><button type="button" class="button secondary" data-close-modal>انصراف</button><button type="submit" class="button primary">ساخت جلسه</button></div></form></dialog><div id="toast" class="toast" role="status"></div><script type="module" src="/js/meetings-page.js"></script></body></html>
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0b1118">
+  <title>جلسه‌ها | هم‌نشین</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/pages.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" data-sidebar></aside>
+    <button class="sidebar-overlay" data-sidebar-overlay aria-label="بستن منو"></button>
+    <section class="workspace">
+      <header class="topbar">
+        <button data-mobile-menu class="icon-button mobile-only" aria-label="باز کردن منو" aria-expanded="false"><svg class="icon"><use href="#i-menu"/></svg></button>
+        <div class="page-title"><p class="eyebrow">CONTROL DESK / جلسه‌ها</p><h1>فضای گفتگوها</h1><p>صوت، اعضا و خروجی هر جلسه را از یک نقطه دنبال کنید.</p></div>
+        <button id="new-meeting-button" class="button primary"><svg class="icon"><use href="#i-plus"/></svg> جلسه جدید</button>
+      </header>
+      <main class="view-section">
+        <section class="dashboard-brief" aria-label="نمای کلی">
+          <div class="brief-primary"><span class="brief-label">جلسه‌های در دسترس</span><strong id="meeting-count">۰</strong><span class="brief-caption">فضای فعال شما</span></div>
+          <div class="brief-signal" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+          <div class="brief-status"><i></i><div><strong>سامانه آماده است</strong><small>برای دریافت و پردازش فایل صوتی</small></div></div>
+        </section>
+        <section aria-labelledby="recent-meetings-title">
+          <div class="section-heading">
+            <div><p class="section-index">01</p><h2 id="recent-meetings-title">آخرین جلسه‌ها</h2><p>برای مشاهده اعضا، فایل‌ها و روند پردازش یک جلسه را باز کنید.</p></div>
+            <button id="refresh-meetings" class="text-button"><svg class="icon"><use href="#i-refresh"/></svg> تازه‌سازی</button>
+          </div>
+          <div id="meetings-grid" class="meeting-grid"></div>
+          <div id="meetings-empty" class="empty-state hidden"><svg class="icon"><use href="#i-inbox"/></svg><h3>میز جلسه‌ها هنوز خالی است</h3><p>اولین جلسه را بسازید؛ سپس اعضا و فایل‌های صوتی را اضافه کنید.</p><button class="button primary" data-open-modal>ساخت اولین جلسه</button></div>
+        </section>
+      </main>
+    </section>
+  </div>
+  <dialog id="meeting-modal" class="modal" aria-labelledby="new-meeting-title">
+    <form id="meeting-form">
+      <div class="modal-heading"><div><p class="eyebrow">NEW SESSION</p><h2 id="new-meeting-title">جلسه جدید</h2></div><button type="button" class="icon-button" data-close-modal aria-label="بستن"><svg class="icon"><use href="#i-x"/></svg></button></div>
+      <label for="meeting-title">عنوان جلسه</label><input id="meeting-title" name="title" required maxlength="255" placeholder="مثلاً جلسه برنامه‌ریزی محصول">
+      <label for="meeting-description">توضیحات</label><textarea id="meeting-description" name="description" rows="4" placeholder="موضوع و هدف جلسه"></textarea>
+      <label for="meeting-date">زمان جلسه</label><input id="meeting-date" name="date" type="datetime-local">
+      <div class="modal-actions"><button type="submit" class="button primary">ساخت جلسه</button><button type="button" class="button secondary" data-close-modal>انصراف</button></div>
+    </form>
+  </dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="/js/meetings-page.js"></script>
+</body>
+</html>

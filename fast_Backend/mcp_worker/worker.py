@@ -174,8 +174,8 @@ class MCPWorker:
                     MeetingPublication.meeting_result_id == meeting_result.id,
                 )
             )
-            if publication is None or publication.approved_at is None:
-                raise ProcessingCancelled("Publication approval is no longer current")
+            if publication is None:
+                raise ProcessingCancelled("Publication was superseded")
             transcript = await session.scalar(
                 select(MeetingResultArtifact)
                 .where(

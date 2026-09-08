@@ -1,5 +1,31 @@
-<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#102a2a"><title>ورود | هم‌نشین</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/pages.css"></head><body>
-<div class="ambient ambient-one"></div><div class="ambient ambient-two"></div><main class="auth-shell">
-<section class="auth-story"><div class="brand-mark">هـ</div><p class="eyebrow">سامانه هوشمند جلسات</p><h1>هر گفتگو،<br><span>روشن و ماندگار.</span></h1><p class="lead">جلسه‌ها، اعضا و فایل‌های صوتی را در یک فضای آرام و منظم مدیریت کنید.</p><div class="story-card"><div class="sound-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div><strong>آماده برای شنیدن</strong><small>پردازش صوت در فاز بعدی فعال می‌شود</small></div></div></section>
-<section class="auth-card"><div class="auth-tabs"><a class="tab active" href="/login.html">ورود</a><a class="tab" href="/register.html">ساخت حساب</a></div><form id="auth-form" class="auth-form" data-mode="login"><div class="form-heading"><h2>خوش برگشتی</h2><p>برای ادامه وارد حساب خود شوید.</p></div><label>ایمیل<input name="email" type="email" autocomplete="email" required placeholder="name@example.com"></label><label>رمز عبور<input name="password" type="password" autocomplete="current-password" required placeholder="رمز عبور"></label><button class="button primary wide" type="submit">ورود به سامانه</button></form><p id="auth-error" class="form-error" role="alert"></p></section>
-</main><script type="module" src="/js/auth-page.js"></script></body></html>
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0b1118">
+  <title>ورود | هم‌نشین</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/pages.css">
+</head>
+<body class="auth-body">
+  <main class="auth-shell">
+    <section class="auth-story" aria-label="معرفی هم‌نشین">
+      <div class="auth-brand"><span class="brand-mark">H</span><div><strong>هم‌نشین</strong><small>Meeting Intelligence</small></div></div>
+      <div class="auth-message"><p class="eyebrow">FROM VOICE TO SIGNAL</p><h1>جلسه را بشنو.<br><span>نتیجه را ببین.</span></h1><p class="lead">فایل‌های صوتی، تفکیک گوینده و متن نهایی در یک فضای کاری دقیق و متمرکز.</p></div>
+      <div class="auth-visual" aria-hidden="true"><div class="visual-readout"><span>LIVE SIGNAL</span><strong>00:24:18</strong></div><div class="sound-wave large"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="visual-track"><span></span></div></div>
+    </section>
+    <section class="auth-card" aria-labelledby="login-title">
+      <div class="auth-tabs"><a class="tab active" aria-current="page" href="/login.html">ورود</a><a class="tab" href="/register.html">ساخت حساب</a></div>
+      <form id="auth-form" class="auth-form" data-mode="login">
+        <div class="form-heading"><p class="eyebrow">WELCOME BACK</p><h2 id="login-title">ورود به میز کار</h2><p>برای ادامه اطلاعات حساب خود را وارد کنید.</p></div>
+        <label for="login-email">ایمیل</label><input id="login-email" name="email" type="email" autocomplete="email" required placeholder="name@example.com" inputmode="email">
+        <label for="login-password">رمز عبور</label><input id="login-password" name="password" type="password" autocomplete="current-password" required placeholder="رمز عبور">
+        <button class="button primary wide" type="submit">ورود به سامانه</button>
+      </form>
+      <p id="auth-error" class="form-error" role="alert" aria-live="assertive"></p>
+    </section>
+  </main>
+  <script type="module" src="/js/auth-page.js"></script>
+</body>
+</html>

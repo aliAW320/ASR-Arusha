@@ -46,6 +46,22 @@ class VoiceStatus(str, enum.Enum):
     ERROR = "error"
 
 
+class DiarizationDecision(str, enum.Enum):
+    """Whether this voice should be split by speaker, and who decided.
+
+    Diarization is the one stage that needs a separate, optional worker, so
+    it is never assumed: at queue time the backend asks whether a worker is
+    actually alive and records the answer here.
+    """
+
+    # A worker is alive; nothing runs past transcription until someone answers.
+    PENDING = "pending"
+    ENABLED = "enabled"
+    SKIPPED = "skipped"
+    # No worker was alive when the run was queued; nobody was asked.
+    UNAVAILABLE = "unavailable"
+
+
 class MeetingMemberRole(str, enum.Enum):
     OWNER = "owner"
     CONTRIBUTOR = "contributor"
@@ -102,7 +118,8 @@ class ProcessingAttemptStatus(str, enum.Enum):
 
 
 class MeetingPublicationStatus(str, enum.Enum):
-    AWAITING_APPROVAL = "awaiting_approval"
+    # Composed but not yet handed to the publication worker.
+    PENDING = "pending"
     QUEUED = "queued"
     RUNNING = "running"
     PUBLISHED = "published"
@@ -598,6 +615,14 @@ class VoiceFile(Base):
         server_default=VoiceStatus.WAITING.value,
         nullable=False,
         index=True,
+    )
+    # Existing rows predate the choice and were all diarized, so they backfill
+    # to ENABLED rather than to the PENDING default of a fresh upload.
+    diarization_decision: Mapped[DiarizationDecision] = mapped_column(
+        _enum_type(DiarizationDecision, "diarization_decision"),
+        default=DiarizationDecision.PENDING,
+        server_default=DiarizationDecision.ENABLED.value,
+        nullable=False,
     )
 
     meeting_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -1176,18 +1201,12 @@ class MeetingPublication(Base):
     status: Mapped[MeetingPublicationStatus] = mapped_column(
         _enum_type(MeetingPublicationStatus, "meeting_publication_status"),
         nullable=False,
-        default=MeetingPublicationStatus.AWAITING_APPROVAL,
-        server_default=MeetingPublicationStatus.AWAITING_APPROVAL.value,
+        default=MeetingPublicationStatus.PENDING,
+        server_default=MeetingPublicationStatus.PENDING.value,
         index=True,
     )
     destination_path: Mapped[str] = mapped_column(
         String(1024), nullable=False, default="پروژه‌های کارآموزی/ASR test"
-    )
-    approved_by_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
-    )
-    approved_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
     )
     attachment_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     vision_status: Mapped[PublicationVisionStatus] = mapped_column(
@@ -1222,7 +1241,6 @@ class MeetingPublication(Base):
     current_job: Mapped[ProcessingJob | None] = relationship(
         foreign_keys=[current_job_id]
     )
-    approved_by: Mapped[User | None] = relationship(foreign_keys=[approved_by_id])
 
 
 # ---------------------------------------------------------------------------
@@ -1579,6 +1597,24 @@ class ProcessingAttempt(Base):
     )
 
     job: Mapped[ProcessingJob] = relationship(back_populates="attempts")
+
+
+class ServiceHeartbeat(Base):
+    """Last time an optional worker reported itself alive.
+
+    Only workers whose absence changes what the API offers need a row here;
+    right now that is diarization, which runs in its own image and may simply
+    not be deployed.
+    """
+
+    __tablename__ = "service_heartbeats"
+
+    service_name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
 
 
 class BrokerOutboxMessage(Base):

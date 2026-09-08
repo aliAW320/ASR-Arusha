@@ -18,8 +18,6 @@ from app.models import (
     DiarizationSpeaker,
     Meeting,
     MeetingArtifactType,
-    MeetingPublication,
-    MeetingPublicationStatus,
     MeetingResult,
     MeetingResultArtifact,
     MeetingResultSource,
@@ -32,6 +30,7 @@ from app.models import (
 from app.observability.logging import configure_logging, get_logger
 from app.services.audit import add_history_event
 from app.services.cancellation import ProcessingCancelled, attempt_is_cancelled
+from app.services.processing import start_meeting_publication
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
 
@@ -241,30 +240,29 @@ class MeetingComposerWorker:
                 attempt.status = ProcessingAttemptStatus.SUCCEEDED
                 attempt.finished_at = now
                 meeting_result.completed_at = now
-                publication = await session.scalar(
-                    select(MeetingPublication).where(
-                        MeetingPublication.meeting_id == item.meeting_id
+                # Composition is the last step before the knowledge base, and
+                # publication is no longer gated on anyone confirming it, so
+                # summarization + MCP is queued right here.
+                publication_job = (
+                    await start_meeting_publication(
+                        session, meeting, meeting_result, self.settings
                     )
+                    if meeting is not None
+                    else None
                 )
-                if publication is None:
-                    publication = MeetingPublication(
-                        meeting=meeting,
-                        meeting_result=meeting_result,
-                        destination_path=self.settings.meeting_publication_default_path,
+                if publication_job is not None:
+                    add_history_event(
+                        session,
+                        event_type="meeting_publication.queued",
+                        description="Meeting summary and knowledge-base publication queued",
+                        event_data={
+                            "job_id": str(publication_job.id),
+                            "stage": ProcessingStage.MINUTES_GENERATION.value,
+                            "meeting_result_id": str(meeting_result.id),
+                        },
+                        affected_meetings=[meeting],
+                        affected_meeting_results=[meeting_result],
                     )
-                    session.add(publication)
-                elif publication.status not in {
-                    MeetingPublicationStatus.QUEUED,
-                    MeetingPublicationStatus.RUNNING,
-                }:
-                    publication.meeting_result = meeting_result
-                    publication.status = MeetingPublicationStatus.AWAITING_APPROVAL
-                    publication.approved_by_id = None
-                    publication.approved_at = None
-                    publication.current_job_id = None
-                    publication.error_code = None
-                    publication.error_message = None
-                    publication.completed_at = None
                 add_history_event(
                     session,
                     event_type="meeting_composition.succeeded",
@@ -278,8 +276,6 @@ class MeetingComposerWorker:
                     affected_meetings=[meeting] if meeting else [],
                     affected_meeting_results=[meeting_result],
                 )
-               
-               
                 await session.commit()
         except Exception:
             try:

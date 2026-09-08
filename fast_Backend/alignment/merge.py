@@ -3,6 +3,12 @@ from typing import Any
 from .types import DiarizationError, DiarizationTurn
 
 
+# Label used when a run deliberately had no diarization. Kept distinct from the
+# SPEAKER_00/SPEAKER_01 labels a real diarizer emits, so "we did not measure
+# who spoke" is never mistaken for "one speaker was measured".
+UNKNOWN_SPEAKER = "SPEAKER_UNKNOWN"
+
+
 def _validated_segments(transcript: dict[str, Any]) -> list[dict[str, Any]]:
     source_segments = transcript.get("segments") or []
     if transcript.get("text", "").strip() and not source_segments:
@@ -248,6 +254,54 @@ def align_transcript_to_speakers(
         "diarization_model": diarization_model,
         "text": transcript.get("text", ""),
         "words": [],
+        "segments": segments,
+        "metrics": transcript.get("metrics") or {},
+    }
+
+
+def build_unattributed_transcript(transcript: dict[str, Any]) -> dict[str, Any]:
+    """Shape a plain ASR transcript into the same speaker-transcript/v1 slot,
+    with every segment attributed to one explicit unknown speaker.
+
+    Used for runs where diarization was declined or unavailable, so cleaning,
+    meeting composition and publication keep consuming a single artifact type
+    instead of branching on whether speakers were measured. Unlike the
+    alignment path this never raises for missing timestamps: without
+    diarization there is nothing to align against, so a segment with no
+    timeline is still perfectly usable text and is simply given a
+    zero-length one.
+    """
+    source_segments = transcript.get("segments") or []
+    segments = []
+    for index, segment in enumerate(source_segments):
+        start_ms = segment.get("start_ms")
+        end_ms = segment.get("end_ms")
+        start_ms = int(start_ms) if start_ms is not None else 0
+        end_ms = int(end_ms) if end_ms is not None else start_ms
+        segments.append(
+            {
+                "id": str(segment.get("id", index)),
+                "start_ms": start_ms,
+                "end_ms": max(start_ms, end_ms),
+                "speaker_id": UNKNOWN_SPEAKER,
+                "speaker_ids": [UNKNOWN_SPEAKER],
+                "text": str(segment.get("text") or ""),
+                "words": [],
+            }
+        )
+
+    words = [
+        {**word, "speaker_id": UNKNOWN_SPEAKER}
+        for word in (transcript.get("words") or [])
+    ]
+    return {
+        "schema_version": "speaker-transcript/v1",
+        "language": transcript.get("language", "fa"),
+        "source_id": transcript.get("source_id"),
+        "model": transcript.get("model"),
+        "diarization_model": None,
+        "text": transcript.get("text", ""),
+        "words": words,
         "segments": segments,
         "metrics": transcript.get("metrics") or {},
     }

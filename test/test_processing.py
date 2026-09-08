@@ -30,10 +30,17 @@ from cleaner.provider import CleanerError, CleanerResponse
 from cleaner.worker import CleanerWorker
 from diarization.provider import DiarizationTurn
 from diarization.worker import DiarizationWorker
-from conftest import authorization, register_user
+from conftest import accept_diarization, authorization, mark_diarization_available, register_user
 
 
-async def _meeting_with_voice(client, email: str):
+async def _meeting_with_voice(client, email: str, session_factory=None):
+    """Upload a voice and opt it into diarization.
+
+    Diarization is optional per voice now, so a test that wants the diarized
+    pipeline has to say so: declare a live worker, then answer yes.
+    """
+    if session_factory is not None:
+        await mark_diarization_available(session_factory)
     owner = await register_user(client, email)
     meeting = (
         await client.post(
@@ -46,17 +53,19 @@ async def _meeting_with_voice(client, email: str):
         files={"upload": ("sample.wav", io.BytesIO(b"RIFF-audio"), "audio/wav")},
     )
     assert uploaded.status_code == 201, uploaded.text
+    if session_factory is not None:
+        await accept_diarization(client, owner, uploaded.json()["id"])
     return owner, meeting, uploaded.json()
 
 
 @pytest.mark.asyncio
-async def test_upload_queues_persistent_job_attempt_and_registry(client, session):
+async def test_upload_queues_persistent_job_attempt_and_registry(client, session, session_factory):
     # Was written when upload queued a single TRANSCRIPTION job. Uploading now
     # queues TRANSCRIPTION and DIARIZATION as two independent root jobs (see
     # _queue_transcription_and_diarization) so alignment can run regardless of
     # which one finishes first -- counts and the job lookup below are updated
     # for that, everything else about the test is unchanged.
-    owner, meeting, voice = await _meeting_with_voice(client, "queue-owner@example.com")
+    owner, meeting, voice = await _meeting_with_voice(client, "queue-owner@example.com", session_factory)
     response = await client.get(
         f"/meetings/{meeting['id']}/processing", headers=authorization(owner)
     )
@@ -90,7 +99,7 @@ async def test_processing_access_and_reprocessing_keep_results_isolated(
     # above: every "process" call now creates two independent jobs (TRANSCRIPTION
     # + DIARIZATION) instead of one, so job/attempt lookups here target the
     # TRANSCRIPTION one explicitly and the final count doubles (2 calls x 2 jobs).
-    owner, meeting, _ = await _meeting_with_voice(client, "reprocess-owner@example.com")
+    owner, meeting, _ = await _meeting_with_voice(client, "reprocess-owner@example.com", session_factory)
     outsider = await register_user(client, "reprocess-outsider@example.com")
 
     first = await client.get(
@@ -191,7 +200,7 @@ class SuccessfulProvider:
 async def test_worker_completes_job_and_persists_canonical_and_raw_artifacts(
     client, session_factory
 ):
-    owner, meeting, voice = await _meeting_with_voice(client, "worker-owner@example.com")
+    owner, meeting, voice = await _meeting_with_voice(client, "worker-owner@example.com", session_factory)
     queued = await client.get(
         f"/meetings/{meeting['id']}/processing", headers=authorization(owner)
     )
@@ -266,7 +275,7 @@ class SuccessfulCleanerProvider:
 async def test_diarization_worker_finishes_pipeline_and_exposes_speaker_transcript(
     client, session_factory
 ):
-    owner, meeting, voice = await _meeting_with_voice(client, "diarization-owner@example.com")
+    owner, meeting, voice = await _meeting_with_voice(client, "diarization-owner@example.com", session_factory)
     asr_worker = ASRWorker(
         session_factory=session_factory,
         storage=client.storage,
@@ -366,7 +375,7 @@ class SegmentOnlyProvider:
 async def test_segment_timestamps_complete_pipeline_without_word_timestamps(
     client, session_factory
 ):
-    owner, meeting, voice = await _meeting_with_voice(client, "timestamp-error@example.com")
+    owner, meeting, voice = await _meeting_with_voice(client, "timestamp-error@example.com", session_factory)
     asr_worker = ASRWorker(
         session_factory=session_factory,
         storage=client.storage,
@@ -425,7 +434,7 @@ class PermanentCleanerFailureProvider:
 async def test_cleaner_failure_keeps_aligned_transcript_and_exposes_exact_error(
     client, session_factory
 ):
-    owner, _, voice = await _meeting_with_voice(client, "cleaner-error@example.com")
+    owner, _, voice = await _meeting_with_voice(client, "cleaner-error@example.com", session_factory)
     asr_worker = ASRWorker(
         session_factory=session_factory,
         storage=client.storage,
@@ -484,7 +493,7 @@ class RetryingCleanerProvider(SuccessfulCleanerProvider):
 async def test_cleaner_retries_three_times_and_persists_only_final_artifact(
     client, session_factory
 ):
-    await _meeting_with_voice(client, "cleaner-retry@example.com")
+    await _meeting_with_voice(client, "cleaner-retry@example.com", session_factory)
     asr_worker = ASRWorker(
         session_factory=session_factory,
         storage=client.storage,
@@ -550,7 +559,7 @@ class FlakyProvider:
 async def test_worker_retries_retryable_failure_three_times_as_append_only_attempts(
     client, session_factory
 ):
-    owner, meeting, _ = await _meeting_with_voice(client, "retry-worker@example.com")
+    owner, meeting, _ = await _meeting_with_voice(client, "retry-worker@example.com", session_factory)
     provider = FlakyProvider()
     worker = ASRWorker(
         session_factory=session_factory,
@@ -588,7 +597,7 @@ class PermanentFailureProvider:
 async def test_worker_does_not_retry_permanent_failure_and_marks_voice_error(
     client, session_factory
 ):
-    owner, meeting, voice = await _meeting_with_voice(client, "failed-worker@example.com")
+    owner, meeting, voice = await _meeting_with_voice(client, "failed-worker@example.com", session_factory)
     worker = ASRWorker(
         session_factory=session_factory,
         storage=client.storage,
@@ -632,7 +641,7 @@ async def test_worker_stops_after_three_retryable_attempts_and_keeps_failure_his
     client, session_factory
 ):
     owner, meeting, voice = await _meeting_with_voice(
-        client, "exhausted-worker@example.com"
+        client, "exhausted-worker@example.com", session_factory
     )
     worker = ASRWorker(
         session_factory=session_factory,
@@ -692,7 +701,7 @@ async def test_alignment_runs_via_word_level_merge_when_asr_finishes_before_diar
     client, session_factory
 ):
     owner, meeting, voice = await _meeting_with_voice(
-        client, "order-asr-first@example.com"
+        client, "order-asr-first@example.com", session_factory
     )
     asr_worker = ASRWorker(
         session_factory=session_factory,
@@ -753,7 +762,7 @@ async def test_alignment_runs_via_word_level_merge_when_diarization_finishes_bef
     """Same scenario as above with the two workers run in the opposite order
     -- proves the merge does not depend on execution order."""
     owner, meeting, voice = await _meeting_with_voice(
-        client, "order-diarization-first@example.com"
+        client, "order-diarization-first@example.com", session_factory
     )
     asr_worker = ASRWorker(
         session_factory=session_factory,

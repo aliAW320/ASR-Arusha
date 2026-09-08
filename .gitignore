@@ -12,4 +12,4 @@ test/audio_test
 node_modules/
 data/huggingface-cache/
 backups/
-__pycache__/
+*pycache*

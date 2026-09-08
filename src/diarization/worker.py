@@ -6,6 +6,7 @@ import socket
 import tempfile
 import time
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +37,7 @@ from app.messaging.outbox import enqueue_attempt
 from app.messaging.topology import QueueNames
 from app.services.audit import add_history_event
 from app.services.cancellation import ProcessingCancelled, run_cancellable
+from app.services.diarization import heartbeat_forever
 from app.services.processing import align_result_if_ready
 from app.storage.base import ObjectStorage
 from app.storage.minio import get_object_storage
@@ -417,6 +419,10 @@ async def run_forever(
         device=settings.diarization_device,
         model=settings.diarization_model_name,
     )
+    # The heartbeat is what tells the API that speaker separation can be
+    # offered at all; without a live worker the API stops asking users about
+    # it and sends new uploads straight from ASR to cleaning.
+    heartbeat = asyncio.create_task(heartbeat_forever(SessionFactory, settings))
     try:
         await consume_attempt_queue(
             settings=settings,
@@ -425,6 +431,9 @@ async def run_forever(
             handler=worker.run_once,
         )
     finally:
+        heartbeat.cancel()
+        with suppress(asyncio.CancelledError):
+            await heartbeat
         await close_database()
 
 

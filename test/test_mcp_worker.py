@@ -11,7 +11,9 @@ from sqlalchemy import select
 from pydantic import SecretStr
 
 from app.config import get_settings
+from app.services.processing import start_meeting_publication
 from app.models import (
+    Meeting,
     MeetingArtifactType,
     MeetingPublication,
     MeetingPublicationStatus,
@@ -498,14 +500,26 @@ async def _meeting_with_completed_result(client, session_factory, email: str):
     return owner, meeting, result_id
 
 
-async def _approve(client, meeting_id, headers, *, path="پروژه‌های کارآموزی/ASR test"):
-    response = await client.post(
-        f"/meetings/{meeting_id}/publication/approve",
-        headers=headers,
-        json={"destination_path": path},
-    )
-    assert response.status_code == 202, response.text
-    return response.json()
+async def _queue_publication(session_factory, meeting_id, *, path="پروژه‌های کارآموزی/ASR test"):
+    """Put the meeting in the state the composer leaves it in.
+
+    Publication is no longer gated on an approval call, so tests reach the
+    queued state the same way production does: through the composer's hook.
+    """
+    async with session_factory() as session:
+        meeting = await session.get(Meeting, uuid.UUID(meeting_id))
+        meeting_result = await session.scalar(
+            select(MeetingResult)
+            .where(MeetingResult.meeting_id == meeting.id)
+            .order_by(MeetingResult.completed_at.desc())
+        )
+        job = await start_meeting_publication(
+            session, meeting, meeting_result, get_settings()
+        )
+        publication = await session.scalar(select(MeetingPublication))
+        publication.destination_path = path
+        await session.commit()
+        return job
 
 
 def _build_worker(session_factory, storage):
@@ -544,7 +558,7 @@ async def test_mcp_worker_publishes_and_excludes_pdf_pages_from_kb_uploads(
     )
     assert pdf.status_code == 201
 
-    await _approve(client, meeting["id"], headers)
+    await _queue_publication(session_factory, meeting["id"])
 
     fake_outline = FakeOutlineMCPClient(
         resolve_result=OutlineDestination("col-1", None, None)
@@ -594,7 +608,7 @@ async def test_mcp_worker_reuses_stored_document_ids_on_idempotent_republish(
         client, session_factory, "mcp-idempotent@example.com"
     )
     headers = authorization(owner)
-    await _approve(client, meeting["id"], headers)
+    await _queue_publication(session_factory, meeting["id"])
 
     fake_outline = FakeOutlineMCPClient(resolve_result=OutlineDestination("col-1", None, None))
     fake_summary = FakeSummaryProvider()
@@ -615,7 +629,7 @@ async def test_mcp_worker_reuses_stored_document_ids_on_idempotent_republish(
     assert first_create_calls == 3  # parent + summary + transcript, all newly created
 
     # Re-approve the same (unmodified) content and publish again.
-    await _approve(client, meeting["id"], headers)
+    await _queue_publication(session_factory, meeting["id"])
     assert await worker.run_once() is True
 
     async with session_factory() as session:
@@ -644,7 +658,7 @@ async def test_mcp_worker_marks_vision_unsupported_and_still_publishes_text(
         headers=headers,
         files={"upload": ("context.png", b"\x89PNG\r\n\x1a\nvalid", "image/png")},
     )
-    await _approve(client, meeting["id"], headers)
+    await _queue_publication(session_factory, meeting["id"])
 
     fake_outline = FakeOutlineMCPClient(resolve_result=OutlineDestination("col-1", None, None))
     fake_summary = FakeSummaryProvider(vision_used=False)
@@ -667,7 +681,7 @@ async def test_mcp_worker_retries_a_retryable_kb_failure_and_keeps_publication_q
         client, session_factory, "mcp-retry@example.com"
     )
     headers = authorization(owner)
-    await _approve(client, meeting["id"], headers)
+    await _queue_publication(session_factory, meeting["id"])
 
     fake_outline = FakeOutlineMCPClient(
         resolve_result=OutlineDestination("col-1", None, None),
@@ -703,7 +717,7 @@ async def test_mcp_worker_fails_permanently_on_a_non_retryable_kb_error(
         client, session_factory, "mcp-permanent-failure@example.com"
     )
     headers = authorization(owner)
-    await _approve(client, meeting["id"], headers)
+    await _queue_publication(session_factory, meeting["id"])
 
     fake_outline = FakeOutlineMCPClient(
         resolve_result=OutlineDestination("col-1", None, None),

@@ -5,8 +5,10 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.models import (
     BrokerOutboxMessage,
+    Meeting,
     MeetingArtifactType,
     MeetingPublication,
     MeetingPublicationStatus,
@@ -17,6 +19,7 @@ from app.models import (
     ProcessingJob,
     ProcessingStage,
 )
+from app.services.processing import start_meeting_publication
 from conftest import authorization, register_user
 
 
@@ -106,7 +109,7 @@ async def test_attachment_upload_accepts_png_and_rejects_spoofed_files(
 
 
 @pytest.mark.asyncio
-async def test_viewer_cannot_upload_delete_or_approve_publication(client, session_factory):
+async def test_viewer_cannot_upload_attachments_or_change_the_destination(client, session_factory):
     owner, meeting = await _meeting(client, "owner-permissions@example.com")
     viewer = await register_user(client, "viewer-publication@example.com")
     added = await client.post(
@@ -122,24 +125,24 @@ async def test_viewer_cannot_upload_delete_or_approve_publication(client, sessio
         headers=authorization(viewer),
         files={"upload": ("image.png", b"\x89PNG\r\n\x1a\nvalid", "image/png")},
     )
-    approval = await client.post(
-        f"/meetings/{meeting['id']}/publication/approve",
+    destination = await client.patch(
+        f"/meetings/{meeting['id']}/publication",
         headers=authorization(viewer),
         json={"destination_path": "پروژه‌های کارآموزی/ASR test"},
     )
     assert upload.status_code == 403
-    assert approval.status_code == 403
+    assert destination.status_code == 403
 
 
 @pytest.mark.asyncio
-async def test_approval_snapshots_attachments_and_enqueues_only_the_mcp_stage(
+async def test_attachments_are_frozen_while_a_publish_is_in_flight(
     client, session_factory
 ):
-    owner, meeting = await _meeting(client, "owner-approval@example.com")
+    """The publication worker has already read the attachment snapshot, so
+    changing the set underneath it would publish something nobody assembled."""
+    owner, meeting = await _meeting(client, "owner-frozen@example.com")
     headers = authorization(owner)
-    result_id = await _completed_result(
-        session_factory, client.storage, meeting["id"]
-    )
+    result_id = await _completed_result(session_factory, client.storage, meeting["id"])
     attachment = await client.post(
         f"/meetings/{meeting['id']}/attachments",
         headers=headers,
@@ -147,47 +150,29 @@ async def test_approval_snapshots_attachments_and_enqueues_only_the_mcp_stage(
     )
     assert attachment.status_code == 201
 
-    approval = await client.post(
-        f"/meetings/{meeting['id']}/publication/approve",
-        headers=headers,
-        json={"destination_path": "/ پروژه‌های کارآموزی / ASR test /"},
-    )
-    assert approval.status_code == 202, approval.text
-    body = approval.json()
-    assert body["status"] == "queued"
-    assert body["meeting_result_id"] == str(result_id)
-    assert body["destination_path"] == "پروژه‌های کارآموزی/ASR test"
-    assert body["attachment_ids"] == [attachment.json()["id"]]
-
     async with session_factory() as session:
-        publication = await session.scalar(select(MeetingPublication))
-        job = await session.get(ProcessingJob, publication.current_job_id)
-        attempt = await session.scalar(
-            select(ProcessingAttempt).where(ProcessingAttempt.job_id == job.id)
+        meeting_row = await session.get(Meeting, uuid.UUID(meeting["id"]))
+        meeting_result = await session.get(MeetingResult, result_id)
+        await start_meeting_publication(
+            session, meeting_row, meeting_result, get_settings()
         )
-        outbox = await session.scalar(
-            select(BrokerOutboxMessage).where(
-                BrokerOutboxMessage.deduplication_key == f"attempt:{attempt.id}"
-            )
-        )
-        assert publication.status == MeetingPublicationStatus.QUEUED
-        assert job.stage == ProcessingStage.MINUTES_GENERATION
-        assert attempt.status == ProcessingAttemptStatus.QUEUED
-        assert outbox.queue_name == "mcp.queue"
+        await session.commit()
 
-    blocked = await client.delete(
+    blocked_upload = await client.post(
+        f"/meetings/{meeting['id']}/attachments",
+        headers=headers,
+        files={"upload": ("late.jpg", b"\xff\xd8\xfflate", "image/jpeg")},
+    )
+    blocked_delete = await client.delete(
         f"/meetings/{meeting['id']}/attachments/{attachment.json()['id']}",
         headers=headers,
     )
-    assert blocked.status_code == 409
 
-
-@pytest.mark.asyncio
-async def test_approval_requires_a_completed_meeting_transcript(client):
-    owner, meeting = await _meeting(client, "owner-no-result@example.com")
-    response = await client.post(
-        f"/meetings/{meeting['id']}/publication/approve",
-        headers=authorization(owner),
-        json={"destination_path": "پروژه‌های کارآموزی/ASR test"},
-    )
-    assert response.status_code == 409
+    assert blocked_upload.status_code == 409
+    assert blocked_delete.status_code == 409
+    async with session_factory() as session:
+        publication = await session.scalar(select(MeetingPublication))
+        job = await session.get(ProcessingJob, publication.current_job_id)
+        assert publication.status == MeetingPublicationStatus.QUEUED
+        assert publication.attachment_ids == [attachment.json()["id"]]
+        assert job.stage == ProcessingStage.MINUTES_GENERATION

@@ -22,7 +22,7 @@ from app.models import (
 )
 from app.services.cancellation import attempt_is_cancelled
 from asr.worker import ASRWorker
-from conftest import authorization, register_user
+from conftest import accept_diarization, authorization, mark_diarization_available, register_user
 
 
 @pytest.mark.asyncio
@@ -52,11 +52,10 @@ async def test_audio_upload_is_stored_in_minio_and_postgres(client, session):
             select(BrokerOutboxMessage).order_by(BrokerOutboxMessage.queue_name)
         )
     ).all()
-    assert [message.queue_name for message in outbox] == ["asr.queue", "diar.queue"]
-    assert {message.payload["stage"] for message in outbox} == {
-        "transcription",
-        "diarization",
-    }
+    # Diarization is opt-in per voice now, so a bare upload only queues ASR;
+    # the diar.queue message appears once someone answers yes.
+    assert [message.queue_name for message in outbox] == ["asr.queue"]
+    assert {message.payload["stage"] for message in outbox} == {"transcription"}
     assert all(message.deduplication_key.startswith("attempt:") for message in outbox)
     assert await session.scalar(
         select(History.id).where(History.event_type == "voice.uploaded")
@@ -174,6 +173,7 @@ async def test_failed_metadata_write_retries_three_times_and_cleans_minio(
 async def test_deleting_voice_cancels_queued_work_and_removes_outbox(
     client, session_factory
 ):
+    await mark_diarization_available(session_factory)
     owner = await register_user(client, "delete-queued@example.com")
     meeting = (
         await client.post(
@@ -185,6 +185,7 @@ async def test_deleting_voice_cancels_queued_work_and_removes_outbox(
         headers=authorization(owner),
         files={"upload": ("queued.wav", b"RIFF-audio", "audio/wav")},
     )
+    await accept_diarization(client, owner, uploaded.json()["id"])
     voice_id = uuid.UUID(uploaded.json()["id"])
     async with session_factory() as session:
         attempt_id = await session.scalar(select(ProcessingAttempt.id))

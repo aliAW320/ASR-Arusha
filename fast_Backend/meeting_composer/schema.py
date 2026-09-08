@@ -66,6 +66,20 @@ def parse_source_segments(transcript: dict[str, Any]) -> list[dict[str, Any]]:
             )
         start_ms = segment.get("start_ms")
         end_ms = segment.get("end_ms")
+        if (
+            len(raw_segments) == 1
+            and (start_ms is None or end_ms is None or int(end_ms) <= int(start_ms))
+        ):
+            timed_words = [
+                word
+                for word in (transcript.get("words") or [])
+                if word.get("start_ms") is not None
+                and word.get("end_ms") is not None
+                and int(word["end_ms"]) > int(word["start_ms"])
+            ]
+            if timed_words:
+                start_ms = min(int(word["start_ms"]) for word in timed_words)
+                end_ms = max(int(word["end_ms"]) for word in timed_words)
         if start_ms is None or end_ms is None or int(end_ms) <= int(start_ms):
             raise ComposerError(
                 f"Source segment at index {index} has a missing or invalid timeline",

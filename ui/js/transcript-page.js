@@ -1,14 +1,16 @@
-import { api } from "./api.js";
-import { $, renderSidebar, requireUser, toast } from "./layout.js";
+import { api } from "./api.js?v=20260908b";
+import { $, renderSidebar, requireUser, toast } from "./layout.js?v=20260908b";
 
 const resultId = new URLSearchParams(location.search).get("result_id");
+const STATUS_LABELS = { queued: "در صف", running: "در حال پردازش", succeeded: "آماده", failed: "ناموفق", cancelled: "لغوشده" };
 const user = await requireUser();
 if (user) renderSidebar(user);
 
 function formatTime(milliseconds) {
   const totalSeconds = Math.floor((milliseconds || 0) / 1000);
   const minutes = Math.floor(totalSeconds / 60);
-  return `${String(minutes).padStart(2, "0")}:${String(totalSeconds % 60).padStart(2, "0")}`;
+  const part = (value) => value.toLocaleString("fa-IR", { minimumIntegerDigits: 2, useGrouping: false });
+  return `${part(minutes)}:${part(totalSeconds % 60)}`;
 }
 
 function renderTranscript(transcript) {
@@ -54,8 +56,8 @@ if (!resultId) {
     const transcript = await api(`/results/${encodeURIComponent(resultId)}/transcript`);
     renderTranscript(transcript);
     renderProcessingError(transcript.processing_error);
-    $("#transcript-language").textContent = transcript.language || "";
-    $("#transcript-meta").textContent = `نسخه ${transcript.schema_version || ""} · ${transcript.segments?.length || 0} بخش · وضعیت ${transcript.processing_status}`;
+    $("#transcript-language").textContent = transcript.language === "fa" ? "فارسی" : transcript.language || "";
+    $("#transcript-meta").textContent = `نسخه ${transcript.schema_version || ""} · ${transcript.segments?.length || 0} بخش · وضعیت ${STATUS_LABELS[transcript.processing_status] || "نامشخص"}`;
     document.title = "متن تبدیل‌شده | هم‌نشین";
   } catch (exception) {
     $("#transcript-content").textContent = "متن هنوز آماده نیست یا دسترسی به آن ممکن نیست.";

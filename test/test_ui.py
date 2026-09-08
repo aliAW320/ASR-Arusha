@@ -29,7 +29,8 @@ def test_ui_exposes_current_backend_flows_without_external_assets():
     assert 'data-mode="login"' in pages["login.html"]
     assert 'data-mode="register"' in pages["register.html"]
     assert 'id="meetings-grid"' in pages["meetings.html"]
-    assert 'accept="audio/*"' in pages["meeting.html"]
+    assert 'accept="audio/*,image/png,image/jpeg,application/pdf"' in pages["meeting.html"]
+    assert 'multiple hidden' in pages["meeting.html"]
     assert 'id="history-list"' in pages["history.html"]
     assert 'id="transcript-content"' in pages["transcript.html"]
     assert 'id="processing-error"' in pages["transcript.html"]
@@ -55,6 +56,10 @@ def test_ui_exposes_current_backend_flows_without_external_assets():
     assert '$("#processing-error-message").textContent = error.message' in javascript
     assert 'error.stage === "cleaning"' in javascript
     assert "پاک‌سازی متن ناموفق بود" in javascript
+    assert "`/meetings/${meetingId}/files`" in javascript
+    assert 'data.append("uploads", file)' in javascript
+    assert 'method: "PATCH"' in javascript
+    assert "/publication/approve" not in javascript
 
 
 def test_each_ui_page_has_its_own_module():
@@ -78,7 +83,7 @@ def test_ui_escapes_server_controlled_content_before_template_rendering():
     }
 
     assert "export const escapeHtml" in javascript["layout.js"]
-    assert "escapeHtml(item.event_type)" in javascript["history-page.js"]
+    assert "EVENT_LABELS[item.event_type]" in javascript["history-page.js"]
     assert "escapeHtml(item.action_description)" in javascript["history-page.js"]
     assert "escapeHtml(voice.original_filename" in javascript["meeting-page.js"]
     assert "escapeHtml(member.user.email)" in javascript["meeting-page.js"]

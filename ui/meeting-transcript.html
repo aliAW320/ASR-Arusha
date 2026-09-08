@@ -1,36 +1,33 @@
 <!doctype html>
 <html lang="fa" dir="rtl">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b1118">
-  <title>متن ترکیبی جلسه | هم‌نشین</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/pages.css">
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#15231f">
+  <title>متن ترکیبی جلسه | هم‌نشین</title><link rel="stylesheet" href="/styles.css?v=20260908b"><link rel="stylesheet" href="/pages.css?v=20260908b">
 </head>
 <body>
   <div class="app-shell">
     <aside class="sidebar" data-sidebar></aside><button class="sidebar-overlay" data-sidebar-overlay aria-label="بستن منو"></button>
     <section class="workspace">
-      <header class="topbar compact-topbar"><button data-mobile-menu class="icon-button mobile-only" aria-label="باز کردن منو" aria-expanded="false"><svg class="icon"><use href="#i-menu"/></svg></button><div class="page-title"><p class="eyebrow">SESSION DOCUMENT / خروجی</p><h1>متن کامل جلسه</h1></div></header>
+      <header class="topbar compact-topbar"><button data-mobile-menu class="icon-button mobile-only" aria-label="باز کردن منو" aria-expanded="false"><svg class="icon"><use href="#i-menu"/></svg></button><div class="page-title"><p class="eyebrow">خروجی یکپارچه</p><h1>متن کامل جلسه</h1></div></header>
       <main class="view-section transcript-workspace">
         <a href="javascript:history.back()" class="text-button back-button"><svg class="icon"><use href="#i-arrow-forward"/></svg> بازگشت</a>
         <article class="panel meeting-transcript-panel">
-          <header class="transcript-header"><div><p class="section-index">COMPOSED TRANSCRIPT</p><h2 id="meeting-transcript-title">متن ترکیبی</h2><p id="meeting-transcript-meta" class="muted"></p></div><span id="meeting-transcript-status" class="status-pill"></span></header>
+          <header class="transcript-header"><div><p class="section-index">نسخه ترکیب‌شده</p><h2 id="meeting-transcript-title">متن ترکیبی</h2><p id="meeting-transcript-meta" class="muted"></p></div><span id="meeting-transcript-status" class="status-pill"></span></header>
           <div class="meeting-transcript-toolbar"><label for="version-select">نسخه</label><select id="version-select"></select><button id="recompose-button" class="button secondary hidden" type="button"><svg class="icon"><use href="#i-refresh"/></svg><span id="recompose-button-label">ترکیب مجدد</span></button></div>
           <section id="meeting-processing-error" class="processing-error hidden" role="alert"><strong id="meeting-processing-error-title"></strong><code id="meeting-processing-error-code"></code><p id="meeting-processing-error-message"></p></section>
           <details class="source-disclosure"><summary>فایل‌های منبع جلسه</summary><div id="meeting-sources" class="stack-list"></div></details>
           <div id="meeting-transcript-content" class="transcript-full" aria-live="polite">در حال بارگذاری متن…</div>
         </article>
         <article class="panel publication-panel" aria-labelledby="publication-title">
-          <div class="panel-heading"><div><p class="section-index">PUBLISH / KNOWLEDGE BASE</p><h2 id="publication-title">تأیید و انتشار نهایی</h2><p>پس از تأیید، خلاصه و متن گویندگان در پایگاه دانش ساخته یا به‌روزرسانی می‌شود.</p></div><span id="publication-status" class="status-pill"></span></div>
+          <div class="panel-heading"><div><p class="section-index">ارسال خودکار</p><h2 id="publication-title">پایگاه دانش</h2><p>پس از ترکیب متن، خلاصه و متن گویندگان بدون تأیید دستی ساخته یا به‌روزرسانی می‌شود.</p></div><span id="publication-status" class="status-pill"></span></div>
           <section id="publication-error" class="processing-error hidden" role="alert" tabindex="-1"><strong>انتشار ناموفق بود</strong><code id="publication-error-code"></code><p id="publication-error-message"></p></section>
-          <div class="attachment-section">
-            <div class="panel-heading compact-heading"><div><h3>پیوست‌های جلسه</h3><p>PNG، JPEG یا PDF را به پرونده این جلسه اضافه کنید.</p></div><label class="button secondary upload-button"><svg class="icon"><use href="#i-paperclip"/></svg> افزودن فایل<input id="attachment-input" type="file" accept="image/png,image/jpeg,application/pdf" multiple hidden></label></div>
-            <div id="attachment-progress" class="upload-progress hidden" role="status"><span></span><p>در حال بارگذاری پیوست…</p></div><div id="attachment-list" class="stack-list" aria-live="polite"></div>
-          </div>
-          <form id="publication-form" class="publication-form"><label for="destination-path">مسیر مقصد در پایگاه دانش</label><input id="destination-path" name="destination_path" required maxlength="1024" value="پروژه‌های کارآموزی/ASR test" aria-describedby="destination-help"><small id="destination-help">مسیر باید از قبل در Outline وجود داشته باشد.</small><button id="approve-publication" class="button primary" type="submit"><svg class="icon"><use href="#i-check"/></svg><span id="approve-publication-label">تأیید نهایی و ارسال</span></button></form>
+          <div class="auto-publish-note"><svg class="icon"><use href="#i-wave"/></svg><div><strong>انتشار بخشی از مسیر خودکار است</strong><p>ترکیب دوبارهٔ جلسه، همان اسناد موجود را در مقصد به‌روزرسانی می‌کند و سند تکراری نمی‌سازد.</p></div></div>
+          <form id="publication-form" class="publication-form"><label for="destination-path">مسیر مقصد در پایگاه دانش</label><input id="destination-path" name="destination_path" required maxlength="1024" value="پروژه‌های کارآموزی/ASR test" aria-describedby="destination-help"><small id="destination-help">مسیر را پیش از شروع انتشار می‌توان تغییر داد.</small><button id="save-destination" class="button secondary" type="submit"><svg class="icon"><use href="#i-check"/></svg><span id="save-destination-label">ذخیره مسیر</span></button></form>
           <p id="vision-note" class="muted hidden" role="status"></p>
         </article>
       </main>
     </section>
   </div>
-  <div id="toast" class="toast" role="status" aria-live="polite"></div><script type="module" src="/js/meeting-transcript-page.js"></script>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div><script type="module" src="/js/meeting-transcript-page.js?v=20260908b"></script>
 </body>
 </html>

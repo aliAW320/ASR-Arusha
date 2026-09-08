@@ -1,5 +1,5 @@
-import { api } from "./api.js";
-import { $, escapeHtml, faNumber, formatDate, renderSidebar, requireUser, toast } from "./layout.js";
+import { api } from "./api.js?v=20260908b";
+import { $, escapeHtml, faNumber, formatDate, renderSidebar, requireUser, toast } from "./layout.js?v=20260908b";
 
 function card(meeting) {
   const date = new Date(meeting.date);

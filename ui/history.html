@@ -1,23 +1,23 @@
 <!doctype html>
 <html lang="fa" dir="rtl">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b1118">
-  <title>تاریخچه | هم‌نشین</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/pages.css">
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#15231f">
+  <title>تاریخچه | هم‌نشین</title><link rel="stylesheet" href="/styles.css?v=20260908b"><link rel="stylesheet" href="/pages.css?v=20260908b">
 </head>
 <body>
   <div class="app-shell">
     <aside class="sidebar" data-sidebar></aside><button class="sidebar-overlay" data-sidebar-overlay aria-label="بستن منو"></button>
     <section class="workspace">
-      <header class="topbar"><button data-mobile-menu class="icon-button mobile-only" aria-label="باز کردن منو" aria-expanded="false"><svg class="icon"><use href="#i-menu"/></svg></button><div class="page-title"><p class="eyebrow">AUDIT STREAM / مدیریت</p><h1>تاریخچه سامانه</h1><p>ردپای رخدادهای تجاری و امنیتی را مرور و فیلتر کنید.</p></div></header>
+      <header class="topbar"><button data-mobile-menu class="icon-button mobile-only" aria-label="باز کردن منو" aria-expanded="false"><svg class="icon"><use href="#i-menu"/></svg></button><div class="page-title"><p class="eyebrow">رویدادهای مدیریتی</p><h1>تاریخچه سامانه</h1><p>ردپای رخدادهای تجاری و امنیتی را مرور و فیلتر کنید.</p></div></header>
       <main class="view-section">
         <section class="history-console" aria-labelledby="history-heading">
-          <div class="section-heading"><div><p class="section-index">EVENT LOG</p><h2 id="history-heading">رخدادهای ثبت‌شده</h2><p>نمایش تازه‌ترین فعالیت‌های سامانه.</p></div><button id="refresh-history" class="text-button"><svg class="icon"><use href="#i-refresh"/></svg> تازه‌سازی</button></div>
-          <form id="history-filter" class="filter-bar"><label class="sr-only" for="event-type">نوع رویداد</label><input id="event-type" name="event_type" placeholder="نوع رویداد؛ مثل meeting.created"><label class="sr-only" for="correlation-id">شناسه هم‌بستگی</label><input id="correlation-id" name="correlation_id" placeholder="Correlation ID" dir="ltr"><button class="button secondary" type="submit">اعمال فیلتر</button></form>
+          <div class="section-heading"><div><p class="section-index">دفتر رویدادها</p><h2 id="history-heading">رخدادهای ثبت‌شده</h2><p>نمایش تازه‌ترین فعالیت‌های سامانه.</p></div><button id="refresh-history" class="text-button"><svg class="icon"><use href="#i-refresh"/></svg> تازه‌سازی</button></div>
+          <form id="history-filter" class="filter-bar"><label class="sr-only" for="event-type">نوع رویداد</label><input id="event-type" name="event_type" placeholder="نوع رویداد؛ مانند ساخت جلسه"><label class="sr-only" for="correlation-id">شناسه هم‌بستگی</label><input id="correlation-id" name="correlation_id" placeholder="شناسه هم‌بستگی" dir="ltr"><button class="button secondary" type="submit">اعمال فیلتر</button></form>
           <div id="history-list" class="timeline" aria-live="polite"></div>
         </section>
       </main>
     </section>
   </div>
-  <div id="toast" class="toast" role="status" aria-live="polite"></div><script type="module" src="/js/history-page.js"></script>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div><script type="module" src="/js/history-page.js?v=20260908b"></script>
 </body>
 </html>

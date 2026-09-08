@@ -1,5 +1,5 @@
-import { api } from "./api.js";
-import { $, escapeHtml, formatDate, renderSidebar, requireUser, toast } from "./layout.js";
+import { api } from "./api.js?v=20260908b";
+import { $, escapeHtml, formatDate, renderSidebar, requireUser, toast } from "./layout.js?v=20260908b";
 
 const meetingId = new URLSearchParams(location.search).get("id");
 if (!meetingId) location.replace("/meetings.html");
@@ -12,7 +12,7 @@ const STATUS_LABELS = {
   cancelled: "لغوشده",
 };
 const PUBLICATION_STATUS_LABELS = {
-  awaiting_approval: "منتظر تأیید",
+  pending: "آماده ارسال خودکار",
   queued: "در صف انتشار",
   running: "در حال خلاصه‌سازی و انتشار",
   published: "منتشرشده",
@@ -27,7 +27,8 @@ let publicationPollTimer = null;
 function formatTime(milliseconds) {
   const totalSeconds = Math.floor((milliseconds || 0) / 1000);
   const minutes = Math.floor(totalSeconds / 60);
-  return `${String(minutes).padStart(2, "0")}:${String(totalSeconds % 60).padStart(2, "0")}`;
+  const part = (value) => value.toLocaleString("fa-IR", { minimumIntegerDigits: 2, useGrouping: false });
+  return `${part(minutes)}:${part(totalSeconds % 60)}`;
 }
 
 function renderStatusPill(status) {
@@ -152,28 +153,16 @@ async function loadVersions() {
   await loadSelectedVersion();
 }
 
-function attachmentIcon(contentType) {
-  return contentType === "application/pdf" ? "file-pdf" : "image";
-}
-
-function renderAttachments(attachments, publication) {
-  const locked = ["queued", "running"].includes(publication.status);
-  $("#attachment-input").disabled = locked;
-  $("#attachment-list").innerHTML = attachments.length
-    ? attachments.map((attachment) => `<div class="list-row"><div class="list-row-main"><span class="file-icon"><svg class="icon"><use href="#i-${attachmentIcon(attachment.content_type)}"/></svg></span><div><strong>${escapeHtml(attachment.original_filename)}</strong><small>${escapeHtml(attachment.content_type)} · ${(attachment.size_bytes / 1048576).toFixed(2)} مگابایت</small></div></div><button class="delete-icon" type="button" aria-label="حذف ${escapeHtml(attachment.original_filename)}" data-delete-attachment="${attachment.id}" ${locked ? "disabled" : ""}><svg class="icon"><use href="#i-trash"/></svg></button></div>`).join("")
-    : `<div class="empty-state"><svg class="icon"><use href="#i-paperclip"/></svg><p>پیوستی برای این جلسه ثبت نشده است.</p></div>`;
-}
-
 function renderPublication(publication) {
-  const status = publication.status || "awaiting_approval";
+  const status = publication.status || "pending";
   const active = ["queued", "running"].includes(status);
   $("#publication-status").textContent = PUBLICATION_STATUS_LABELS[status] || status;
   $("#publication-status").dataset.status = status;
   $("#destination-path").value = publication.destination_path || "پروژه‌های کارآموزی/ASR test";
   $("#destination-path").disabled = active;
-  const button = $("#approve-publication");
+  const button = $("#save-destination");
   button.disabled = active;
-  $("#approve-publication-label").textContent = active ? "در حال انجام…" : status === "published" ? "تأیید و به‌روزرسانی دوباره" : status === "failed" ? "تلاش مجدد" : "تأیید نهایی و ارسال";
+  $("#save-destination-label").textContent = active ? "انتشار در حال انجام است" : "ذخیره مسیر";
 
   const error = $("#publication-error");
   if (status === "failed") {
@@ -198,12 +187,8 @@ function renderPublication(publication) {
 async function loadPublication() {
   if (publicationPollTimer) clearTimeout(publicationPollTimer);
   publicationPollTimer = null;
-  const [publication, attachments] = await Promise.all([
-    api(`/meetings/${encodeURIComponent(meetingId)}/publication`),
-    api(`/meetings/${encodeURIComponent(meetingId)}/attachments`),
-  ]);
+  const publication = await api(`/meetings/${encodeURIComponent(meetingId)}/publication`);
   renderPublication(publication);
-  renderAttachments(attachments, publication);
   if (["queued", "running"].includes(publication.status)) {
     publicationPollTimer = setTimeout(() => loadPublication().catch((exception) => toast(exception.message, "error")), 3000);
   }
@@ -229,61 +214,27 @@ $("#recompose-button").addEventListener("click", async () => {
     toast("درخواست ترکیب ثبت شد.");
     await loadVersions();
   } catch (exception) {
-    toast(exception.message, "error");
-  }
-});
-
-$("#attachment-input").addEventListener("change", async (event) => {
-  const files = [...event.target.files];
-  if (!files.length) return;
-  const progress = $("#attachment-progress");
-  progress.classList.remove("hidden");
-  try {
-    for (const file of files) {
-      const data = new FormData();
-      data.append("upload", file);
-      await api(`/meetings/${encodeURIComponent(meetingId)}/attachments`, { method: "POST", body: data });
-    }
-    toast("پیوست‌ها ذخیره شدند و برای تأیید بعدی آماده‌اند.");
-    await loadPublication();
-  } catch (exception) {
-    toast(exception.message, "error");
-  } finally {
-    progress.classList.add("hidden");
-    event.target.value = "";
-  }
-});
-
-$("#attachment-list").addEventListener("click", async (event) => {
-  const button = event.target.closest("[data-delete-attachment]");
-  if (!button || !confirm("این پیوست حذف شود؟")) return;
-  try {
-    await api(`/meetings/${encodeURIComponent(meetingId)}/attachments/${encodeURIComponent(button.dataset.deleteAttachment)}`, { method: "DELETE" });
-    toast("پیوست حذف شد.");
-    await loadPublication();
-  } catch (exception) {
+    button.disabled = false;
     toast(exception.message, "error");
   }
 });
 
 $("#publication-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const button = $("#approve-publication");
+  const button = $("#save-destination");
   button.disabled = true;
   try {
-    await api(`/meetings/${encodeURIComponent(meetingId)}/publication/approve`, {
-      method: "POST",
+    await api(`/meetings/${encodeURIComponent(meetingId)}/publication`, {
+      method: "PATCH",
       body: JSON.stringify({ destination_path: $("#destination-path").value.trim() }),
     });
-    toast("تأیید ثبت شد؛ خلاصه‌سازی و انتشار در صف قرار گرفت.");
+    toast("مسیر پایگاه دانش ذخیره شد.");
     await loadPublication();
   } catch (exception) {
     toast(exception.message, "error");
     $("#publication-error").classList.remove("hidden");
-    $("#publication-error-code").textContent = "approval_failed";
+    $("#publication-error-code").textContent = "destination_update_failed";
     $("#publication-error-message").textContent = exception.message;
     $("#publication-error").focus();
-  } finally {
-    button.disabled = false;
   }
 });

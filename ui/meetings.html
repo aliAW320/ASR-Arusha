@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#0b1118">
+  <meta name="theme-color" content="#15231f">
   <title>جلسه‌ها | هم‌نشین</title>
-  <link rel="stylesheet" href="/styles.css">
-  <link rel="stylesheet" href="/pages.css">
+  <link rel="stylesheet" href="/styles.css?v=20260908b">
+  <link rel="stylesheet" href="/pages.css?v=20260908b">
 </head>
 <body>
   <div class="app-shell">
@@ -15,7 +15,7 @@
     <section class="workspace">
       <header class="topbar">
         <button data-mobile-menu class="icon-button mobile-only" aria-label="باز کردن منو" aria-expanded="false"><svg class="icon"><use href="#i-menu"/></svg></button>
-        <div class="page-title"><p class="eyebrow">CONTROL DESK / جلسه‌ها</p><h1>فضای گفتگوها</h1><p>صوت، اعضا و خروجی هر جلسه را از یک نقطه دنبال کنید.</p></div>
+        <div class="page-title"><p class="eyebrow">میز جلسه‌ها</p><h1>فضای گفتگوها</h1><p>صوت، اعضا و خروجی هر جلسه را از یک نقطه دنبال کنید.</p></div>
         <button id="new-meeting-button" class="button primary"><svg class="icon"><use href="#i-plus"/></svg> جلسه جدید</button>
       </header>
       <main class="view-section">
@@ -26,7 +26,7 @@
         </section>
         <section aria-labelledby="recent-meetings-title">
           <div class="section-heading">
-            <div><p class="section-index">01</p><h2 id="recent-meetings-title">آخرین جلسه‌ها</h2><p>برای مشاهده اعضا، فایل‌ها و روند پردازش یک جلسه را باز کنید.</p></div>
+            <div><p class="section-index">فهرست جلسه‌ها</p><h2 id="recent-meetings-title">آخرین جلسه‌ها</h2><p>برای مشاهده اعضا، فایل‌ها و روند پردازش یک جلسه را باز کنید.</p></div>
             <button id="refresh-meetings" class="text-button"><svg class="icon"><use href="#i-refresh"/></svg> تازه‌سازی</button>
           </div>
           <div id="meetings-grid" class="meeting-grid"></div>
@@ -37,7 +37,7 @@
   </div>
   <dialog id="meeting-modal" class="modal" aria-labelledby="new-meeting-title">
     <form id="meeting-form">
-      <div class="modal-heading"><div><p class="eyebrow">NEW SESSION</p><h2 id="new-meeting-title">جلسه جدید</h2></div><button type="button" class="icon-button" data-close-modal aria-label="بستن"><svg class="icon"><use href="#i-x"/></svg></button></div>
+      <div class="modal-heading"><div><p class="eyebrow">گفتگوی تازه</p><h2 id="new-meeting-title">جلسه جدید</h2></div><button type="button" class="icon-button" data-close-modal aria-label="بستن"><svg class="icon"><use href="#i-x"/></svg></button></div>
       <label for="meeting-title">عنوان جلسه</label><input id="meeting-title" name="title" required maxlength="255" placeholder="مثلاً جلسه برنامه‌ریزی محصول">
       <label for="meeting-description">توضیحات</label><textarea id="meeting-description" name="description" rows="4" placeholder="موضوع و هدف جلسه"></textarea>
       <label for="meeting-date">زمان جلسه</label><input id="meeting-date" name="date" type="datetime-local">
@@ -45,6 +45,6 @@
     </form>
   </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="/js/meetings-page.js"></script>
+  <script type="module" src="/js/meetings-page.js?v=20260908b"></script>
 </body>
 </html>

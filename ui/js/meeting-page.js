@@ -1,5 +1,5 @@
-import { api } from "./api.js";
-import { $, escapeHtml, faNumber, formatDate, renderSidebar, requireUser, toast } from "./layout.js";
+import { api } from "./api.js?v=20260908b";
+import { $, escapeHtml, faNumber, formatDate, renderSidebar, requireUser, toast } from "./layout.js?v=20260908b";
 
 const meetingId = new URLSearchParams(location.search).get("id");
 let meeting;
@@ -18,8 +18,10 @@ const STAGE_LABELS = {
   meeting_compose: "ترکیب جلسه",
 };
 const JOB_STATUS_LABELS = { queued: "در صف", running: "در حال اجرا", succeeded: "موفق", failed: "ناموفق", cancelled: "لغوشده" };
+const VOICE_STATUS_LABELS = { uploaded: "دریافت‌شده", processing: "در حال پردازش", finished: "آماده", error: "خطا" };
 const JOB_STATUS_PRIORITY = { failed: 0, running: 1, queued: 2, succeeded: 3, cancelled: 4 };
 const STAGE_ORDER = { preprocess: 0, transcription: 1, diarization: 1, alignment: 2, cleaning: 3, minutes_generation: 4, meeting_compose: 5 };
+let diarizationAvailable = false;
 
 function pickActiveJob(jobs) {
   if (!jobs.length) return null;
@@ -30,7 +32,7 @@ function pickActiveJob(jobs) {
 }
 
 function describeVoiceProcessing(voice, job) {
-  if (!job) return { text: voice.status === "finished" ? "آماده" : voice.status === "error" ? "خطا" : voice.status, className: "" };
+  if (!job) return { text: VOICE_STATUS_LABELS[voice.status] || "در انتظار پردازش", className: "" };
   const stageLabel = STAGE_LABELS[job.stage] || job.stage;
   const statusLabel = JOB_STATUS_LABELS[job.status] || job.status;
   const latestAttempt = job.attempts && job.attempts.length ? job.attempts[job.attempts.length - 1] : null;
@@ -53,16 +55,68 @@ function renderVoices(voices, transcripts, processingByVoice) {
     return `<div class="list-row"><div class="list-row-main"><span class="file-icon"><svg class="icon"><use href="#i-mic"/></svg></span><div><strong>${escapeHtml(voice.original_filename || "فایل صوتی")}</strong><small>${voice.size_bytes ? `${faNumber((voice.size_bytes / 1048576).toFixed(2))} مگابایت` : "اندازه نامشخص"} · <span class="voice-status ${detail.className}"${detail.title ? ` title="${escapeHtml(detail.title)}"` : ""}>${escapeHtml(detail.text)}</span></small>${transcript ? `<p class="transcript-text">${escapeHtml(transcript.text)}</p><a class="text-button" href="/transcript.html?result_id=${encodeURIComponent(transcript.id)}">مشاهده متن کامل <svg class="icon"><use href="#i-arrow-next"/></svg></a>` : ""}</div></div><button class="delete-icon" aria-label="حذف فایل" data-delete-voice="${voice.id}"><svg class="icon"><use href="#i-trash"/></svg></button></div>`;
   }).join("") : `<div class="empty-state"><svg class="icon"><use href="#i-mic"/></svg><p>فایل صوتی ثبت نشده است.</p></div>`;
 }
+
+function attachmentIcon(contentType) {
+  return contentType === "application/pdf" ? "file-pdf" : "image";
+}
+
+function attachmentTypeLabel(contentType) {
+  return contentType === "application/pdf" ? "سند PDF" : "تصویر";
+}
+
+function renderAttachments(attachments) {
+  $("#attachment-count").textContent = faNumber(attachments.length);
+  $("#attachment-list").innerHTML = attachments.length
+    ? attachments.map((attachment) => `<div class="list-row"><div class="list-row-main"><span class="file-icon"><svg class="icon"><use href="#i-${attachmentIcon(attachment.content_type)}"/></svg></span><div><strong>${escapeHtml(attachment.original_filename)}</strong><small>${attachmentTypeLabel(attachment.content_type)} · ${faNumber((attachment.size_bytes / 1048576).toFixed(2))} مگابایت</small></div></div><button class="delete-icon" type="button" aria-label="حذف ${escapeHtml(attachment.original_filename)}" data-delete-attachment="${attachment.id}"><svg class="icon"><use href="#i-trash"/></svg></button></div>`).join("")
+    : `<div class="empty-state compact-empty"><svg class="icon"><use href="#i-paperclip"/></svg><p>پیوستی برای این جلسه ثبت نشده است.</p></div>`;
+}
+
+function stageState(jobs, stages) {
+  const relevant = jobs.filter((job) => stages.includes(job.stage));
+  if (!relevant.length) return "idle";
+  if (relevant.some((job) => ["queued", "running"].includes(job.status))) return "active";
+  if (relevant.some((job) => job.status === "failed")) return "failed";
+  if (relevant.some((job) => job.status === "succeeded")) return "done";
+  return "idle";
+}
+
+function renderPipeline(voices, attachments, jobs, publication) {
+  const states = {
+    upload: voices.length || attachments.length ? "done" : "idle",
+    transcription: stageState(jobs, ["preprocess", "transcription", "diarization", "alignment"]),
+    cleaning: stageState(jobs, ["cleaning"]),
+    meeting_compose: stageState(jobs, ["meeting_compose"]),
+    publication: publication.status === "published" ? "done" : publication.status === "failed" ? "failed" : ["queued", "running"].includes(publication.status) || (publication.status === "pending" && voices.length) ? "active" : "idle",
+  };
+  const order = ["upload", "transcription", "cleaning", "meeting_compose", "publication"];
+  let blocked = false;
+  for (const key of order) {
+    const item = document.querySelector(`[data-pipeline-stage="${key}"]`);
+    let state = states[key];
+    if (blocked && state === "idle") state = "blocked";
+    item.dataset.state = state;
+    item.setAttribute("aria-label", `${item.querySelector("strong").textContent}: ${{ done: "انجام‌شده", active: "در حال انجام", failed: "ناموفق", blocked: "در انتظار مرحله قبل", idle: "هنوز شروع نشده" }[state]}`);
+    if (["active", "failed"].includes(state)) blocked = true;
+  }
+  const failed = order.find((key) => states[key] === "failed");
+  const active = order.find((key) => states[key] === "active");
+  const activeLabel = active && document.querySelector(`[data-pipeline-stage="${active}"] strong`).textContent;
+  $("#pipeline-summary").textContent = failed ? "پردازش به بررسی نیاز دارد" : activeLabel ? `${activeLabel} در حال انجام است` : publication.status === "published" ? "خروجی جلسه در پایگاه دانش به‌روز است" : voices.length ? "فایل‌ها دریافت شدند" : "در انتظار نخستین فایل";
+}
 function renderMembers(members) {
   $("#member-list").innerHTML = members.map((member) => `<div class="list-row"><div class="list-row-main"><span class="avatar">${escapeHtml((member.user.full_name || member.user.email).slice(0, 1))}</span><div><strong>${escapeHtml(member.user.full_name || member.user.email)}</strong><small>${escapeHtml(member.user.email)} · ${roleLabel(member.role)}</small></div></div>${member.role === "owner" ? `<span class="status-pill">مالک</span>` : `<div class="row-actions"><select data-member-role="${member.user.id}"><option value="viewer" ${member.role === "viewer" ? "selected" : ""}>مشاهده‌گر</option><option value="contributor" ${member.role === "contributor" ? "selected" : ""}>همکار</option></select><button class="delete-icon" aria-label="حذف عضو" data-delete-member="${member.user.id}"><svg class="icon"><use href="#i-trash"/></svg></button></div>`}</div>`).join("");
 }
 async function refreshCollections() {
-  const [members, voices, jobs] = await Promise.all([
+  const [members, voices, jobs, attachments, publication] = await Promise.all([
     api(`/meetings/${meetingId}/members`),
     api(`/meetings/${meetingId}/voices`),
     api(`/meetings/${meetingId}/processing`),
+    api(`/meetings/${meetingId}/attachments`),
+    api(`/meetings/${meetingId}/publication`),
   ]);
   renderMembers(members);
+  renderAttachments(attachments);
+  renderPipeline(voices, attachments, jobs, publication);
   const processingByVoice = {};
   for (const job of jobs) {
     if (!job.voice_id) continue;
@@ -95,7 +149,14 @@ async function loadMeeting() {
   } catch (exception) { toast(exception.message, "error"); }
 }
 const user = await requireUser();
-if (user) { renderSidebar(user); loadMeeting(); }
+if (user) {
+  renderSidebar(user);
+  loadMeeting();
+  api("/processing/diarization").then((availability) => {
+    diarizationAvailable = Boolean(availability.available && availability.enabled);
+    $("#diarization-option").classList.toggle("hidden", !diarizationAvailable);
+  }).catch(() => { diarizationAvailable = false; });
+}
 setInterval(pollCollections, 3000);
 
 const modal = $("#meeting-modal");
@@ -118,17 +179,38 @@ $("#delete-meeting").addEventListener("click", async () => {
   try { await api(`/meetings/${meetingId}`, { method: "DELETE" }); location.replace("/meetings.html"); }
   catch (exception) { toast(exception.message, "error"); }
 });
-$("#voice-input").addEventListener("change", async (event) => {
-  const file = event.target.files[0]; if (!file) return;
+$("#meeting-files-input").addEventListener("change", async (event) => {
+  const files = [...event.target.files]; if (!files.length) return;
   const progress = $("#upload-progress"); progress.classList.remove("hidden");
-  const data = new FormData(); data.append("upload", file);
-  try { await api(`/meetings/${meetingId}/voices`, { method: "POST", body: data }); toast("فایل ذخیره شد."); refreshCollections(); }
+  $("#selected-files").textContent = `${faNumber(files.length)} فایل انتخاب شد: ${files.map((file) => file.name).join("، ")}`;
+  const data = new FormData();
+  files.forEach((file) => data.append("uploads", file));
+  try {
+    const result = await api(`/meetings/${meetingId}/files`, { method: "POST", body: data });
+    if (diarizationAvailable && result.voices.length) {
+      const enabled = $("#diarization-enabled").checked;
+      try {
+        await Promise.all(result.voices.map((voice) => api(`/voices/${voice.id}/diarization`, { method: "POST", body: JSON.stringify({ enabled }) })));
+      } catch (exception) {
+        toast(`فایل‌ها ذخیره شدند، اما انتخاب تفکیک گویندگان ثبت نشد: ${exception.message}`, "error");
+        await refreshCollections();
+        return;
+      }
+    }
+    toast(`${faNumber(files.length)} فایل با موفقیت ذخیره شد.`);
+    await refreshCollections();
+  }
   catch (exception) { toast(exception.message, "error"); }
-  finally { progress.classList.add("hidden"); event.target.value = ""; }
+  finally { progress.classList.add("hidden"); event.target.value = ""; $("#selected-files").textContent = ""; }
 });
 $("#voice-list").addEventListener("click", async (event) => {
   const button = event.target.closest("[data-delete-voice]"); if (!button || !confirm("فایل حذف شود؟")) return;
   try { await api(`/voices/${button.dataset.deleteVoice}`, { method: "DELETE" }); toast("فایل حذف شد."); refreshCollections(); }
+  catch (exception) { toast(exception.message, "error"); }
+});
+$("#attachment-list").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-delete-attachment]"); if (!button || !confirm("پیوست حذف شود؟")) return;
+  try { await api(`/meetings/${meetingId}/attachments/${button.dataset.deleteAttachment}`, { method: "DELETE" }); toast("پیوست حذف شد."); refreshCollections(); }
   catch (exception) { toast(exception.message, "error"); }
 });
 $("#add-member-form").addEventListener("submit", async (event) => {

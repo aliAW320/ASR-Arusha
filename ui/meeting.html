@@ -3,17 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#0b1118">
+  <meta name="theme-color" content="#15231f">
   <title>جزئیات جلسه | هم‌نشین</title>
-  <link rel="stylesheet" href="/styles.css">
-  <link rel="stylesheet" href="/pages.css">
+  <link rel="stylesheet" href="/styles.css?v=20260908b">
+  <link rel="stylesheet" href="/pages.css?v=20260908b">
 </head>
 <body>
   <div class="app-shell">
     <aside class="sidebar" data-sidebar></aside>
     <button class="sidebar-overlay" data-sidebar-overlay aria-label="بستن منو"></button>
     <section class="workspace">
-      <header class="topbar compact-topbar"><button data-mobile-menu class="icon-button mobile-only" aria-label="باز کردن منو" aria-expanded="false"><svg class="icon"><use href="#i-menu"/></svg></button><div class="page-title"><p class="eyebrow">MEETING / جزئیات</p><h1>میز جلسه</h1></div></header>
+      <header class="topbar compact-topbar"><button data-mobile-menu class="icon-button mobile-only" aria-label="باز کردن منو" aria-expanded="false"><svg class="icon"><use href="#i-menu"/></svg></button><div class="page-title"><p class="eyebrow">مدیریت گفتگو</p><h1>میز جلسه</h1></div></header>
       <main class="view-section">
         <a href="/meetings.html" class="text-button back-button"><svg class="icon"><use href="#i-arrow-forward"/></svg> بازگشت به جلسه‌ها</a>
         <section class="detail-hero">
@@ -21,15 +21,37 @@
           <div class="hero-wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
           <div class="detail-actions"><a id="meeting-transcript-link" class="button secondary" href="#"><svg class="icon"><use href="#i-document"/></svg> متن جلسه</a><button id="edit-meeting" class="button secondary"><svg class="icon"><use href="#i-edit"/></svg> ویرایش</button><button id="delete-meeting" class="button danger"><svg class="icon"><use href="#i-trash"/></svg> حذف</button></div>
         </section>
+        <section class="pipeline-panel" aria-labelledby="pipeline-title">
+          <div class="pipeline-heading">
+            <div><p class="section-index">مسیر خودکار پردازش</p><h2 id="pipeline-title">از صدا تا پایگاه دانش</h2></div>
+            <p id="pipeline-summary" class="pipeline-summary" role="status" aria-live="polite">در انتظار نخستین فایل</p>
+          </div>
+          <ol id="processing-pipeline" class="processing-pipeline">
+            <li data-pipeline-stage="upload"><span>۱</span><div><strong>دریافت فایل</strong><small>صوت و پیوست‌ها</small></div></li>
+            <li data-pipeline-stage="transcription"><span>۲</span><div><strong>رونویسی</strong><small>تبدیل صدا به متن</small></div></li>
+            <li data-pipeline-stage="cleaning"><span>۳</span><div><strong>پاک‌سازی</strong><small>آماده‌سازی متن</small></div></li>
+            <li data-pipeline-stage="meeting_compose"><span>۴</span><div><strong>ترکیب جلسه</strong><small>ساخت متن یکپارچه</small></div></li>
+            <li data-pipeline-stage="publication"><span>۵</span><div><strong>پایگاه دانش</strong><small>خلاصه‌سازی و ارسال</small></div></li>
+          </ol>
+        </section>
         <div class="detail-columns">
           <section class="panel voice-panel" aria-labelledby="voices-heading">
-            <div class="panel-heading"><div><p class="section-index">01 / AUDIO</p><h2 id="voices-heading">فایل‌های صوتی</h2><p>پس از آپلود، وضعیت پردازش همین‌جا به‌روز می‌شود.</p></div><label class="button primary upload-button"><svg class="icon"><use href="#i-upload"/></svg> آپلود صوت<input id="voice-input" type="file" accept="audio/*" hidden></label></div>
-            <!-- Optional diarization connects here after the backend exposes availability and upload-choice contracts. -->
-            <div id="upload-progress" class="upload-progress hidden" role="status"><span></span><p>در حال بارگذاری فایل…</p></div>
+            <div class="panel-heading"><div><p class="section-index">فایل‌های جلسه</p><h2 id="voices-heading">صوت‌ها و پیوست‌ها</h2><p>همه فایل‌ها را باهم انتخاب کنید؛ ذخیره‌سازی دسته‌ای و یکپارچه انجام می‌شود.</p></div></div>
+            <label class="file-drop" for="meeting-files-input">
+              <span class="file-drop-icon"><svg class="icon"><use href="#i-upload"/></svg></span>
+              <span><strong>فایل‌ها را اینجا انتخاب کنید</strong><small>صوت، تصویر PNG یا JPEG و PDF · حداکثر ۵۰۰ مگابایت برای هر صوت</small></span>
+              <span class="button primary compact">انتخاب فایل‌ها</span>
+              <input id="meeting-files-input" type="file" name="uploads" accept="audio/*,image/png,image/jpeg,application/pdf" multiple hidden>
+            </label>
+            <label id="diarization-option" class="choice-row hidden"><input id="diarization-enabled" type="checkbox"><span><strong>تفکیک گویندگان</strong><small>صدای هر گوینده جدا و در متن مشخص شود.</small></span></label>
+            <p id="selected-files" class="selected-files" aria-live="polite"></p>
+            <div id="upload-progress" class="upload-progress hidden" role="status"><span></span><p>در حال بارگذاری دسته‌ای فایل‌ها…</p></div>
             <div id="voice-list" class="stack-list" aria-live="polite"></div>
+            <div class="subsection-heading"><h3>پیوست‌های جلسه</h3><span id="attachment-count" class="count-badge">۰</span></div>
+            <div id="attachment-list" class="stack-list" aria-live="polite"></div>
           </section>
           <section class="panel members-panel" aria-labelledby="members-heading">
-            <div class="panel-heading"><div><p class="section-index">02 / ACCESS</p><h2 id="members-heading">اعضای جلسه</h2><p>فقط کاربران ثبت‌شده را اضافه کنید.</p></div></div>
+            <div class="panel-heading"><div><p class="section-index">دسترسی‌ها</p><h2 id="members-heading">اعضای جلسه</h2><p>فقط کاربران ثبت‌شده را اضافه کنید.</p></div></div>
             <form id="add-member-form" class="inline-form">
               <label class="sr-only" for="member-email">ایمیل کاربر</label><input id="member-email" name="email" type="email" required placeholder="ایمیل کاربر">
               <label class="sr-only" for="member-role">سطح دسترسی</label><select id="member-role" name="role"><option value="viewer">مشاهده‌گر</option><option value="contributor">همکار</option></select>
@@ -43,7 +65,7 @@
   </div>
   <dialog id="meeting-modal" class="modal" aria-labelledby="edit-meeting-title">
     <form id="meeting-form">
-      <div class="modal-heading"><div><p class="eyebrow">EDIT SESSION</p><h2 id="edit-meeting-title">ویرایش جلسه</h2></div><button type="button" class="icon-button" data-close-modal aria-label="بستن"><svg class="icon"><use href="#i-x"/></svg></button></div>
+      <div class="modal-heading"><div><p class="eyebrow">مشخصات جلسه</p><h2 id="edit-meeting-title">ویرایش جلسه</h2></div><button type="button" class="icon-button" data-close-modal aria-label="بستن"><svg class="icon"><use href="#i-x"/></svg></button></div>
       <label for="edit-title">عنوان جلسه</label><input id="edit-title" name="title" required maxlength="255">
       <label for="edit-description">توضیحات</label><textarea id="edit-description" name="description" rows="4"></textarea>
       <label for="edit-date">زمان جلسه</label><input id="edit-date" name="date" type="datetime-local" required>
@@ -51,6 +73,6 @@
     </form>
   </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="/js/meeting-page.js"></script>
+  <script type="module" src="/js/meeting-page.js?v=20260908b"></script>
 </body>
 </html>

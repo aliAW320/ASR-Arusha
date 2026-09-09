@@ -148,6 +148,15 @@ class DiarizationWorker:
                 raise RuntimeError("Queued diarization job is incomplete")
             result = attempt.job.result
             voice = result.voice
+            normalized = await session.scalar(
+                select(ResultArtifact).where(
+                    ResultArtifact.result_id == result.id,
+                    ResultArtifact.artifact_type
+                    == ResultArtifactType.NORMALIZED_AUDIO,
+                )
+            )
+            if normalized is None:
+                raise RuntimeError("Normalized audio artifact is missing")
             return WorkItem(
                 attempt_id=attempt.id,
                 attempt_number=attempt.attempt_number,
@@ -155,9 +164,9 @@ class DiarizationWorker:
                 result_id=result.id,
                 voice_id=voice.id,
                 meeting_id=voice.meeting_id,
-                source_bucket=voice.minio_bucket,
-                source_key=voice.minio_key,
-                filename=voice.original_filename or "voice.bin",
+                source_bucket=normalized.minio_bucket,
+                source_key=normalized.minio_key,
+                filename=f"{voice.id}.wav",
                 model_name=attempt.job.model.name,
             )
 

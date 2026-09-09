@@ -13,6 +13,7 @@ DEAD_LETTER_ROUTING_KEY = "processing.failed"
 
 @dataclass(frozen=True)
 class QueueNames:
+    preprocess: str
     asr: str
     diar: str
     cleaning: str
@@ -22,6 +23,7 @@ class QueueNames:
     @classmethod
     def from_settings(cls, settings: Settings) -> "QueueNames":
         return cls(
+            preprocess=settings.rabbitmq_preprocess_queue,
             asr=settings.rabbitmq_asr_queue,
             diar=settings.rabbitmq_diar_queue,
             cleaning=settings.rabbitmq_cleaning_queue,
@@ -31,7 +33,7 @@ class QueueNames:
 
     @property
     def work_queues(self) -> tuple[str, ...]:
-        return self.asr, self.diar, self.cleaning, self.mcp
+        return self.preprocess, self.asr, self.diar, self.cleaning, self.mcp
 
 
 async def declare_topology(

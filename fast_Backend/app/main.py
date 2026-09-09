@@ -16,6 +16,7 @@ import asr.worker as asr_worker
 import cleaner.worker as cleaner_worker
 import mcp_worker.worker as mcp_worker_worker
 import meeting_composer.worker as meeting_composer_worker
+import preprocessing.worker as preprocessing_worker
 
 
 settings = get_settings()
@@ -35,6 +36,7 @@ logger = get_logger(__name__)
 WorkerRunner = Callable[[Settings], Awaitable[None]]
 BACKGROUND_WORKERS: tuple[tuple[str, WorkerRunner], ...] = (
     ("broker-dispatcher", dispatcher.run),
+    ("preprocess-worker", preprocessing_worker.run),
     ("asr-worker", asr_worker.run),
     ("cleaner-worker", cleaner_worker.run),
     ("meeting-composer-worker", meeting_composer_worker.run),
@@ -43,17 +45,30 @@ BACKGROUND_WORKERS: tuple[tuple[str, WorkerRunner], ...] = (
 
 
 async def _run_background_worker(name: str, run: WorkerRunner, settings: Settings) -> None:
-    try:
-        await run(settings)
-    except asyncio.CancelledError:
-        raise
-    except Exception as error:
-        logger.exception(
-            "background_worker_crashed",
-            "Background worker task crashed and will not be restarted",
-            error=error,
-            worker=name,
-        )
+    restart_count = 0
+    while True:
+        try:
+            await run(settings)
+            logger.warning(
+                "background_worker_stopped",
+                "Background worker stopped unexpectedly and will be restarted",
+                worker=name,
+                restart_count=restart_count,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.exception(
+                "background_worker_crashed",
+                "Background worker task crashed and will be restarted",
+                error=error,
+                worker=name,
+                restart_count=restart_count,
+                restart_delay_seconds=settings.rabbitmq_retry_delay_seconds,
+            )
+
+        restart_count += 1
+        await asyncio.sleep(settings.rabbitmq_retry_delay_seconds)
 
 
 @asynccontextmanager

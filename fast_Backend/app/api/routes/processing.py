@@ -17,6 +17,7 @@ from ...models import (
     ProcessingJob,
     ProcessingStage,
     Result,
+    ResultArtifact,
     ResultArtifactType,
     User,
     VoiceFile,
@@ -198,7 +199,14 @@ async def choose_voice_diarization(
                     ProcessingJob.stage == ProcessingStage.DIARIZATION,
                 )
             )
-            if existing is None:
+            normalized_audio = await session.scalar(
+                select(ResultArtifact.id).where(
+                    ResultArtifact.result_id == result.id,
+                    ResultArtifact.artifact_type
+                    == ResultArtifactType.NORMALIZED_AUDIO,
+                )
+            )
+            if existing is None and normalized_audio is not None:
                 await queue_result_diarization(session, result, settings)
     else:
         voice.diarization_decision = DiarizationDecision.SKIPPED

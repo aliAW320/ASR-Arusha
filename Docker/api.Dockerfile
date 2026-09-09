@@ -4,6 +4,10 @@ FROM python:3.11-slim
 
 COPY --from=uv /uv /uvx /bin/
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY pyproject.toml uv.lock ./
@@ -14,6 +18,7 @@ COPY alembic ./alembic
 COPY fast_Backend/app ./app
 COPY fast_Backend/alignment ./alignment
 COPY fast_Backend/asr ./asr
+COPY fast_Backend/preprocessing ./preprocessing
 COPY fast_Backend/cleaner ./cleaner
 COPY fast_Backend/meeting_composer ./meeting_composer
 COPY fast_Backend/mcp_worker ./mcp_worker

@@ -12,6 +12,7 @@ from .topology import QueueNames
 def queue_for_stage(stage: ProcessingStage, settings: Settings) -> str:
     names = QueueNames.from_settings(settings)
     mapping = {
+        ProcessingStage.PREPROCESS: names.preprocess,
         ProcessingStage.TRANSCRIPTION: names.asr,
         ProcessingStage.DIARIZATION: names.diar,
         ProcessingStage.CLEANING: names.cleaning,

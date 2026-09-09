@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     rabbitmq_vhost: str = "/"
     rabbitmq_prefetch_count: int = Field(default=1, ge=1, le=100)
     rabbitmq_retry_delay_seconds: float = Field(default=5.0, ge=0, le=3600)
+    rabbitmq_preprocess_queue: str = "preprocess.queue"
     rabbitmq_asr_queue: str = "asr.queue"
     rabbitmq_diar_queue: str = "diar.queue"
     rabbitmq_cleaning_queue: str = "cleaning.queue"
@@ -52,6 +53,8 @@ class Settings(BaseSettings):
     asr_num_beams: int = Field(default=5, ge=1, le=20)
     asr_max_attempts: int = Field(default=3, ge=1, le=10)
     asr_worker_name: str = "asr-worker"
+    preprocess_max_attempts: int = Field(default=3, ge=1, le=10)
+    preprocess_worker_name: str = "preprocess-worker"
 
     huggingface_token: SecretStr | None = None
     diarization_model_name: str = Field(

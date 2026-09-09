@@ -165,6 +165,15 @@ class ASRWorker:
                 raise RuntimeError("Queued ASR job is incomplete")
             voice = attempt.job.result.voice
             integration = attempt.job.integration
+            normalized = await session.scalar(
+                select(ResultArtifact).where(
+                    ResultArtifact.result_id == attempt.job.result.id,
+                    ResultArtifact.artifact_type
+                    == ResultArtifactType.NORMALIZED_AUDIO,
+                )
+            )
+            if normalized is None:
+                raise RuntimeError("Normalized audio artifact is missing")
             return WorkItem(
                 attempt_id=attempt.id,
                 attempt_number=attempt.attempt_number,
@@ -172,10 +181,10 @@ class ASRWorker:
                 result_id=attempt.job.result.id,
                 voice_id=voice.id,
                 meeting_id=voice.meeting_id,
-                source_bucket=voice.minio_bucket,
-                source_key=voice.minio_key,
-                filename=voice.original_filename or "voice.bin",
-                content_type=voice.content_type or "application/octet-stream",
+                source_bucket=normalized.minio_bucket,
+                source_key=normalized.minio_key,
+                filename=f"{voice.id}.wav",
+                content_type="audio/wav",
                 duration_seconds=(voice.duration_ms / 1000 if voice.duration_ms else None),
                 model_name=attempt.job.model.name,
                 base_url=(integration.endpoint if integration and integration.endpoint else self.settings.base_url),

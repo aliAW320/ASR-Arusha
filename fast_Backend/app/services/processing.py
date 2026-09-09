@@ -441,10 +441,17 @@ async def queue_result_diarization(
     the upload already sent transcription on its way.
     """
     diarization_model = await ensure_diarization_registry(session, settings)
+    preprocess_job = await session.scalar(
+        select(ProcessingJob).where(
+            ProcessingJob.result_id == result.id,
+            ProcessingJob.stage == ProcessingStage.PREPROCESS,
+        )
+    )
     job = ProcessingJob(
         result=result,
         stage=ProcessingStage.DIARIZATION,
         model=diarization_model,
+        dependencies=[preprocess_job] if preprocess_job is not None else [],
     )
     attempt = ProcessingAttempt(
         job=job,
@@ -463,6 +470,7 @@ async def _queue_transcription_and_diarization(
     settings: Settings,
     *,
     with_diarization: bool,
+    depends_on: ProcessingJob | None = None,
 ) -> tuple[ProcessingJob, ProcessingJob | None]:
     """Queue TRANSCRIPTION, and DIARIZATION too when it was asked for.
 
@@ -488,6 +496,7 @@ async def _queue_transcription_and_diarization(
         stage=ProcessingStage.TRANSCRIPTION,
         model=transcription_model,
         integration=integration,
+        dependencies=[depends_on] if depends_on is not None else [],
     )
     transcription_attempt = ProcessingAttempt(
         job=transcription_job,
@@ -504,6 +513,7 @@ async def _queue_transcription_and_diarization(
             result=result,
             stage=ProcessingStage.DIARIZATION,
             model=diarization_model,
+            dependencies=[depends_on] if depends_on is not None else [],
         )
         diarization_attempt = ProcessingAttempt(
             job=diarization_job,
@@ -521,6 +531,42 @@ async def _queue_transcription_and_diarization(
             session, diarization_attempt, ProcessingStage.DIARIZATION, settings
         )
     return transcription_job, diarization_job
+
+
+async def queue_result_preprocessing(
+    session: AsyncSession,
+    result: Result,
+    settings: Settings,
+) -> ProcessingJob:
+    job = ProcessingJob(result=result, stage=ProcessingStage.PREPROCESS)
+    attempt = ProcessingAttempt(
+        job=job,
+        attempt_number=1,
+        status=ProcessingAttemptStatus.QUEUED,
+    )
+    session.add_all([job, attempt])
+    await session.flush()
+    enqueue_attempt(session, attempt, ProcessingStage.PREPROCESS, settings)
+    return job
+
+
+async def queue_after_preprocessing(
+    session: AsyncSession,
+    result: Result,
+    settings: Settings,
+    preprocess_job: ProcessingJob,
+) -> tuple[ProcessingJob, ProcessingJob | None]:
+    """Release ASR and optional diarization after normalized audio exists."""
+    voice = await session.get(VoiceFile, result.voice_id)
+    if voice is None:
+        raise ValueError("Preprocessed result has no source voice")
+    return await _queue_transcription_and_diarization(
+        session,
+        result,
+        settings,
+        with_diarization=voice.diarization_decision == DiarizationDecision.ENABLED,
+        depends_on=preprocess_job,
+    )
 
 
 async def _finish_without_diarization(
@@ -781,7 +827,9 @@ async def queue_meeting_transcription(
         .join(Result.voice)
         .where(
             VoiceFile.meeting_id == meeting.id,
-            ProcessingJob.stage == ProcessingStage.TRANSCRIPTION,
+            ProcessingJob.stage.in_(
+                {ProcessingStage.PREPROCESS, ProcessingStage.TRANSCRIPTION}
+            ),
             ProcessingAttempt.status.in_(
                 {ProcessingAttemptStatus.QUEUED, ProcessingAttemptStatus.RUNNING}
             ),
@@ -806,14 +854,9 @@ async def queue_meeting_transcription(
         result = Result(voice=voice)
         session.add(result)
         voice.diarization_decision = await resolve_decision(session, voice, settings)
-        transcription_job, _diarization_job = await _queue_transcription_and_diarization(
-            session,
-            result,
-            settings,
-            with_diarization=voice.diarization_decision == DiarizationDecision.ENABLED,
-        )
+        preprocess_job = await queue_result_preprocessing(session, result, settings)
         voice.status = VoiceStatus.PENDING
-        jobs.append(transcription_job)
+        jobs.append(preprocess_job)
 
     await session.flush()
     return jobs
@@ -826,25 +869,16 @@ async def queue_voice_transcription(
 ) -> ProcessingJob:
     """Create the first processing run for a newly uploaded voice.
 
-    Returns the transcription job (the response shape /meetings/{id}/process
-    and upload callers already expect). Diarization is queued alongside it
-    only when this voice already has a standing "yes"; otherwise the voice is
-    left on PENDING (a worker is alive, so someone will be asked) or
-    UNAVAILABLE (no worker, so nobody is asked and the run goes straight to
-    cleaning after transcription).
+    Returns the preprocessing job. ASR and optional diarization are released
+    only after one canonical 16 kHz mono WAV artifact has been stored.
     """
     result = Result(voice=voice)
     session.add(result)
     voice.diarization_decision = await resolve_decision(session, voice, settings)
-    transcription_job, _diarization_job = await _queue_transcription_and_diarization(
-        session,
-        result,
-        settings,
-        with_diarization=voice.diarization_decision == DiarizationDecision.ENABLED,
-    )
+    preprocess_job = await queue_result_preprocessing(session, result, settings)
     voice.status = VoiceStatus.PENDING
     await session.flush()
-    return transcription_job
+    return preprocess_job
 
 
 async def load_processing_job(

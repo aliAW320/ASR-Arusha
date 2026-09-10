@@ -83,6 +83,7 @@ def test_background_workers_cover_every_merged_service():
         "cleaner-worker",
         "meeting-composer-worker",
         "mcp-worker",
+        "preprocess-worker",
     }
     # Every runner must be the embeddable `run(settings)` coroutine, not the
     # standalone `run_forever()` -- the latter reconfigures global logging
@@ -96,7 +97,14 @@ def test_merged_worker_packages_live_under_fast_backend_not_src():
     # These packages used to ship in their own Docker image each; they now
     # run inside the api process, so they belong next to app/ under
     # fast_Backend/ rather than in the standalone src/ tree.
-    for package in ("asr", "cleaner", "meeting_composer", "mcp_worker", "alignment"):
+    for package in (
+        "asr",
+        "cleaner",
+        "meeting_composer",
+        "mcp_worker",
+        "alignment",
+        "preprocessing",
+    ):
         assert (PROJECT_ROOT / "fast_Backend" / package / "__init__.py").is_file(), package
         assert not (PROJECT_ROOT / "src" / package).exists(), package
 

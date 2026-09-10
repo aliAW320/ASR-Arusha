@@ -33,7 +33,7 @@ from asr.provider import TranscriptionResponse
 from asr.worker import ASRWorker
 from cleaner.provider import CleanerResponse
 from cleaner.worker import CleanerWorker
-from conftest import authorization, register_user
+from conftest import authorization, register_user, run_preprocessing
 
 
 class _Transcription:
@@ -100,9 +100,9 @@ async def test_upload_waits_for_a_choice_while_a_diarization_worker_is_alive(
     processing = await client.get(
         f"/meetings/{meeting['id']}/processing", headers=authorization(owner)
     )
-    # Transcription starts immediately -- it never depended on diarization --
-    # but diarization itself must not be queued before the user answers.
-    assert _stages(processing.json()) == {"transcription"}
+    # The canonical audio conversion starts immediately, but diarization is
+    # not released before the user answers.
+    assert _stages(processing.json()) == {"preprocess"}
 
 
 @pytest.mark.asyncio
@@ -115,7 +115,7 @@ async def test_upload_skips_diarization_entirely_when_no_worker_is_alive(
     processing = await client.get(
         f"/meetings/{meeting['id']}/processing", headers=authorization(owner)
     )
-    assert _stages(processing.json()) == {"transcription"}
+    assert _stages(processing.json()) == {"preprocess"}
 
 
 @pytest.mark.asyncio
@@ -149,10 +149,15 @@ async def test_accepting_diarization_queues_the_diarization_job(client, session_
 
     assert response.status_code == 200, response.text
     assert response.json()["diarization_decision"] == "enabled"
+    await run_preprocessing(session_factory, client.storage)
     processing = await client.get(
         f"/meetings/{meeting['id']}/processing", headers=authorization(owner)
     )
-    assert _stages(processing.json()) == {"transcription", "diarization"}
+    assert _stages(processing.json()) == {
+        "preprocess",
+        "transcription",
+        "diarization",
+    }
 
 
 @pytest.mark.asyncio
@@ -218,6 +223,7 @@ async def test_transcription_success_holds_the_pipeline_until_the_choice_is_made
 ):
     await _heartbeat(session_factory)
     owner, meeting, _voice = await _upload(client, "diar-hold@example.com")
+    await run_preprocessing(session_factory, client.storage)
     worker = ASRWorker(
         session_factory=session_factory,
         storage=client.storage,
@@ -232,7 +238,7 @@ async def test_transcription_success_holds_the_pipeline_until_the_choice_is_made
     )
     # No alignment, and above all no cleaning: cleaning the ASR text now would
     # throw away the speaker transcript the user may still ask for.
-    assert _stages(processing.json()) == {"transcription"}
+    assert _stages(processing.json()) == {"preprocess", "transcription"}
 
 
 @pytest.mark.asyncio
@@ -241,6 +247,7 @@ async def test_declining_after_transcription_releases_cleaning_immediately(
 ):
     await _heartbeat(session_factory)
     owner, meeting, voice = await _upload(client, "diar-decline-late@example.com")
+    await run_preprocessing(session_factory, client.storage)
     worker = ASRWorker(
         session_factory=session_factory,
         storage=client.storage,
@@ -259,7 +266,11 @@ async def test_declining_after_transcription_releases_cleaning_immediately(
     processing = await client.get(
         f"/meetings/{meeting['id']}/processing", headers=authorization(owner)
     )
-    assert _stages(processing.json()) == {"transcription", "cleaning"}
+    assert _stages(processing.json()) == {
+        "preprocess",
+        "transcription",
+        "cleaning",
+    }
 
 
 @pytest.mark.asyncio
@@ -267,6 +278,7 @@ async def test_pipeline_without_diarization_still_produces_a_cleaned_transcript(
     client, session_factory
 ):
     owner, meeting, voice = await _upload(client, "diar-none-e2e@example.com")
+    await run_preprocessing(session_factory, client.storage)
     asr_worker = ASRWorker(
         session_factory=session_factory,
         storage=client.storage,
@@ -317,6 +329,7 @@ async def test_reprocessing_keeps_an_explicit_choice_and_requeues_diarization(
         json={"enabled": True},
     )
     assert accepted.status_code == 200
+    await run_preprocessing(session_factory, client.storage)
     # Reprocessing is refused while the first transcription is still queued.
     worker = ASRWorker(
         session_factory=session_factory,
@@ -331,6 +344,7 @@ async def test_reprocessing_keeps_an_explicit_choice_and_requeues_diarization(
     )
 
     assert reprocess.status_code == 202, reprocess.text
+    await run_preprocessing(session_factory, client.storage)
     async with session_factory() as session:
         # The second run must not ask again: the user already answered.
         assert await session.scalar(

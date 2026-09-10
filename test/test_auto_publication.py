@@ -62,11 +62,11 @@ async def test_one_request_stores_audio_and_supporting_files_together(client, se
         "slide.png",
     ]
     async with session_factory() as session:
-        # The audio starts transcribing on upload; the other files just wait
-        # for the summarizer.
+        # Audio first enters canonical WAV preprocessing; supporting files just
+        # wait for the summarizer.
         assert await session.scalar(
             select(func.count(ProcessingJob.id)).where(
-                ProcessingJob.stage == ProcessingStage.TRANSCRIPTION
+                ProcessingJob.stage == ProcessingStage.PREPROCESS
             )
         ) == 1
         assert await session.scalar(select(func.count(MeetingAttachment.id))) == 2

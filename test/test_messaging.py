@@ -99,7 +99,7 @@ async def _uploaded_attempt(client, session_factory):
         return await session.scalar(
             select(ProcessingAttempt)
             .join(ProcessingAttempt.job)
-            .where(ProcessingJob.stage == ProcessingStage.TRANSCRIPTION)
+            .where(ProcessingJob.stage == ProcessingStage.PREPROCESS)
         )
 
 
@@ -139,12 +139,13 @@ async def test_dispatcher_publishes_persistent_message_and_marks_outbox(
     assert await dispatcher._publish_next(exchange) is True
 
     message, routing_key, mandatory = exchange.published[0]
-    assert routing_key == "asr.queue"
+    assert routing_key == "preprocess.queue"
     assert mandatory is True
     assert message.delivery_mode == DeliveryMode.PERSISTENT
     payload = json.loads(message.body)
     assert message.message_id == attempt.queue_task_id
     assert routing_key == {
+        "preprocess": "preprocess.queue",
         "transcription": "asr.queue",
         "diarization": "diar.queue",
     }[payload["stage"]]
@@ -168,7 +169,7 @@ async def test_consumer_rejects_invalid_payload_to_dead_letter_queue(session_fac
 
     await handle_attempt_message(
         message=message,
-        queue_name="asr.queue",
+        queue_name="preprocess.queue",
         session_factory=session_factory,
         handler=lambda _: None,
     )
@@ -189,7 +190,7 @@ async def test_consumer_requeues_delivery_when_queued_attempt_was_not_claimed(
 
     await handle_attempt_message(
         message=message,
-        queue_name="asr.queue",
+        queue_name="preprocess.queue",
         session_factory=session_factory,
         handler=lambda _: _false(),
     )
@@ -215,7 +216,7 @@ async def test_consumer_acks_duplicate_delivery_after_attempt_completed(
 
     await handle_attempt_message(
         message=message,
-        queue_name="asr.queue",
+        queue_name="preprocess.queue",
         session_factory=session_factory,
         handler=lambda _: _false(),
     )
@@ -248,7 +249,7 @@ async def test_consumer_dead_letters_terminal_failure_and_acks_scheduled_retry(
     )
     await handle_attempt_message(
         message=terminal,
-        queue_name="asr.queue",
+        queue_name="preprocess.queue",
         session_factory=session_factory,
         handler=fail_without_retry,
     )
@@ -268,7 +269,7 @@ async def test_consumer_dead_letters_terminal_failure_and_acks_scheduled_retry(
     )
     await handle_attempt_message(
         message=retry_scheduled,
-        queue_name="asr.queue",
+        queue_name="preprocess.queue",
         session_factory=session_factory,
         handler=lambda _: _true(),
     )
@@ -292,7 +293,7 @@ async def test_consumer_nacks_uncommitted_unexpected_failure(client, session_fac
 
     await handle_attempt_message(
         message=message,
-        queue_name="asr.queue",
+        queue_name="preprocess.queue",
         session_factory=session_factory,
         handler=crash,
     )

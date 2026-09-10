@@ -46,6 +46,11 @@ jobs:
       - name: Verify lock file and install dependencies
         run: uv sync --locked
 
+      - name: Install audio preprocessing dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+
       - name: Run pre-build tests
         run: |
           uv run --locked pytest \

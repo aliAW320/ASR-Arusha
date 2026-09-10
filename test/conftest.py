@@ -122,3 +122,24 @@ async def accept_diarization(client, auth_response: dict, voice_id: str):
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+async def run_preprocessing(session_factory, storage, *, times: int = 1):
+    """Run real preprocessing orchestration over tiny sentinel test audio."""
+    from app.config import get_settings
+    from preprocessing.audio import NormalizedAudio
+    from preprocessing.worker import PreprocessingWorker
+
+    async def copy_normalizer(source, destination):
+        payload = source.read_bytes()
+        destination.write_bytes(payload)
+        return NormalizedAudio(duration_ms=1000, size_bytes=len(payload))
+
+    worker = PreprocessingWorker(
+        session_factory=session_factory,
+        storage=storage,
+        settings=get_settings(),
+        normalizer=copy_normalizer,
+    )
+    for _ in range(times):
+        assert await worker.run_once() is True

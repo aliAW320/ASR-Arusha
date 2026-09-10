@@ -22,7 +22,13 @@ from app.models import (
 )
 from app.services.cancellation import attempt_is_cancelled
 from asr.worker import ASRWorker
-from conftest import accept_diarization, authorization, mark_diarization_available, register_user
+from conftest import (
+    accept_diarization,
+    authorization,
+    mark_diarization_available,
+    register_user,
+    run_preprocessing,
+)
 
 
 @pytest.mark.asyncio
@@ -52,10 +58,8 @@ async def test_audio_upload_is_stored_in_minio_and_postgres(client, session):
             select(BrokerOutboxMessage).order_by(BrokerOutboxMessage.queue_name)
         )
     ).all()
-    # Diarization is opt-in per voice now, so a bare upload only queues ASR;
-    # the diar.queue message appears once someone answers yes.
-    assert [message.queue_name for message in outbox] == ["asr.queue"]
-    assert {message.payload["stage"] for message in outbox} == {"transcription"}
+    assert [message.queue_name for message in outbox] == ["preprocess.queue"]
+    assert {message.payload["stage"] for message in outbox} == {"preprocess"}
     assert all(message.deduplication_key.startswith("attempt:") for message in outbox)
     assert await session.scalar(
         select(History.id).where(History.event_type == "voice.uploaded")
@@ -203,14 +207,14 @@ async def test_deleting_voice_cancels_queued_work_and_removes_outbox(
         event = await session.scalar(
             select(History).where(History.event_type == "voice.deleted")
         )
-        assert event.event_data["cancelled_processing_attempts"] == 2
+        assert event.event_data["cancelled_processing_attempts"] == 1
         cancellation_event = await session.scalar(
             select(History).where(History.event_type == "processing.cancelled")
         )
         assert cancellation_event.event_data == {
             "voice_id": str(voice_id),
             "reason": "voice_deleted",
-            "cancelled_attempts": 2,
+            "cancelled_attempts": 1,
         }
     assert await attempt_is_cancelled(session_factory, attempt_id) is True
 
@@ -245,6 +249,7 @@ async def test_deleting_voice_cancels_active_asr_without_persisting_output(
         files={"upload": ("running.wav", b"RIFF-audio", "audio/wav")},
     )
     voice_id = uuid.UUID(uploaded.json()["id"])
+    await run_preprocessing(session_factory, client.storage)
     provider = BlockingTranscriptionProvider()
     deletion_committed = asyncio.Event()
 

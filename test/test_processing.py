@@ -30,7 +30,13 @@ from cleaner.provider import CleanerError, CleanerResponse
 from cleaner.worker import CleanerWorker
 from diarization.provider import DiarizationTurn
 from diarization.worker import DiarizationWorker
-from conftest import accept_diarization, authorization, mark_diarization_available, register_user
+from conftest import (
+    accept_diarization,
+    authorization,
+    mark_diarization_available,
+    register_user,
+    run_preprocessing,
+)
 
 
 async def _meeting_with_voice(client, email: str, session_factory=None):
@@ -55,6 +61,7 @@ async def _meeting_with_voice(client, email: str, session_factory=None):
     assert uploaded.status_code == 201, uploaded.text
     if session_factory is not None:
         await accept_diarization(client, owner, uploaded.json()["id"])
+        await run_preprocessing(session_factory, client.storage)
     return owner, meeting, uploaded.json()
 
 
@@ -72,15 +79,15 @@ async def test_upload_queues_persistent_job_attempt_and_registry(client, session
 
     assert response.status_code == 200, response.text
     jobs = {job["stage"]: job for job in response.json()}
-    assert set(jobs) == {"transcription", "diarization"}
+    assert set(jobs) == {"preprocess", "transcription", "diarization"}
     job = jobs["transcription"]
     assert job["voice_id"] == voice["id"]
     assert job["status"] == "queued"
     assert job["attempts"][0]["attempt_number"] == 1
     assert jobs["diarization"]["status"] == "queued"
     assert await session.scalar(select(func.count(Result.id))) == 1
-    assert await session.scalar(select(func.count(ProcessingJob.id))) == 2
-    assert await session.scalar(select(func.count(ProcessingAttempt.id))) == 2
+    assert await session.scalar(select(func.count(ProcessingJob.id))) == 3
+    assert await session.scalar(select(func.count(ProcessingAttempt.id))) == 3
     assert await session.scalar(select(func.count(ModelRuntime.id))) == 2
     assert await session.scalar(select(func.count(ModelDefinition.id))) == 2
     assert await session.scalar(select(func.count(ExternalIntegration.id))) == 1
@@ -136,17 +143,17 @@ async def test_processing_access_and_reprocessing_keep_results_isolated(
     owner_status = await client.get(
         f"/meetings/{meeting['id']}/processing", headers=authorization(owner)
     )
-    second_transcription = next(
-        job for job in second.json() if job["stage"] == "transcription"
+    second_preprocess = next(
+        job for job in second.json() if job["stage"] == "preprocess"
     )
     owner_result = await client.get(
-        f"/results/{second_transcription['result_id']}", headers=authorization(owner)
+        f"/results/{second_preprocess['result_id']}", headers=authorization(owner)
     )
     denied_result = await client.get(
-        f"/results/{second_transcription['result_id']}", headers=authorization(outsider)
+        f"/results/{second_preprocess['result_id']}", headers=authorization(outsider)
     )
     assert second.status_code == 202
-    assert first_transcription["result_id"] != second_transcription["result_id"]
+    assert first_transcription["result_id"] != second_preprocess["result_id"]
     assert denied_start.status_code == 403
     assert denied_status.status_code == 403
     assert owner_result.status_code == 200
@@ -232,6 +239,7 @@ async def test_worker_completes_job_and_persists_canonical_and_raw_artifacts(
     assert transcript.json()["text"] == "سلام دنیا"
     assert transcript.json()["processing_status"] == "queued"
     assert {item["artifact_type"] for item in results.json()[0]["artifacts"]} == {
+        "normalized_audio",
         "transcript_json",
         "raw_text",
     }
@@ -329,6 +337,7 @@ async def test_diarization_worker_finishes_pipeline_and_exposes_speaker_transcri
     ]
     assert transcript.json()["segments"][0]["text"].endswith("اصلاح‌شده")
     assert {item["artifact_type"] for item in result["artifacts"]} == {
+        "normalized_audio",
         "transcript_json",
         "raw_text",
         "diarization_json",
@@ -341,6 +350,7 @@ async def test_diarization_worker_finishes_pipeline_and_exposes_speaker_transcri
         labels = set(await session.scalars(select(DiarizationSpeaker.label)))
         assert stored_voice.status == VoiceStatus.FINISHED
         assert stages == {
+            ProcessingStage.PREPROCESS,
             ProcessingStage.TRANSCRIPTION,
             ProcessingStage.DIARIZATION,
             ProcessingStage.ALIGNMENT,
@@ -574,14 +584,17 @@ async def test_worker_retries_retryable_failure_three_times_as_append_only_attem
 
     async with session_factory() as session:
         job = await session.scalar(
-            select(ProcessingJob).options(selectinload(ProcessingJob.attempts))
+            select(ProcessingJob)
+            .options(selectinload(ProcessingJob.attempts))
+            .where(ProcessingJob.stage == ProcessingStage.TRANSCRIPTION)
         )
         assert [attempt.status for attempt in job.attempts] == [
             ProcessingAttemptStatus.FAILED,
             ProcessingAttemptStatus.FAILED,
             ProcessingAttemptStatus.SUCCEEDED,
         ]
-        assert await session.scalar(select(func.count(ResultArtifact.id))) == 2
+        # Canonical ASR JSON + raw text + the normalized audio input artifact.
+        assert await session.scalar(select(func.count(ResultArtifact.id))) == 3
 
 
 class PermanentFailureProvider:

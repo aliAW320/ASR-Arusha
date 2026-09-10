@@ -1,11 +1,12 @@
 import asyncio
 import io
+import uuid
 import wave
 
 import pytest
 
 from app.config import get_settings
-from app.models import ResultArtifactType
+from app.models import ResultArtifactType, VoiceFile
 from conftest import authorization, register_user
 from preprocessing.audio import NormalizedAudio, normalize_audio
 from preprocessing.worker import PreprocessingWorker
@@ -36,20 +37,17 @@ async def test_preprocessing_stores_one_normalized_artifact_then_queues_asr(
     client, session_factory
 ):
     owner = await register_user(client, "preprocess@example.com")
-    print("registered")
     meeting = (
         await client.post(
             "/meetings", headers=authorization(owner), json={"title": "Normalize"}
         )
     ).json()
-    print("meeting")
     uploaded = await client.post(
         f"/meetings/{meeting['id']}/voices",
         headers=authorization(owner),
         files={"upload": ("source.mp3", io.BytesIO(b"source-audio"), "audio/mpeg")},
     )
     assert uploaded.status_code == 201, uploaded.text
-    print("uploaded")
     voice = uploaded.json()
 
     async def fake_normalizer(source, destination):
@@ -63,7 +61,6 @@ async def test_preprocessing_stores_one_normalized_artifact_then_queues_asr(
         settings=get_settings(),
         normalizer=fake_normalizer,
     )
-    print("worker")
     assert await asyncio.wait_for(worker.run_once(), timeout=2) is True
 
     processing = await client.get(
@@ -89,11 +86,9 @@ async def test_preprocessing_stores_one_normalized_artifact_then_queues_asr(
         (normalized["minio_bucket"], normalized["minio_key"])
     ] == b"RIFF-normalized-16k-mono"
 
-    voices = await client.get(
-        f"/meetings/{meeting['id']}/voices", headers=authorization(owner)
-    )
-    stored = voices.json()[0]
-    assert stored["duration_ms"] == 1234
-    assert stored["codec"] == "pcm_s16le"
-    assert stored["sample_rate_hz"] == 16000
-    assert stored["channels"] == 1
+    async with session_factory() as session:
+        stored = await session.get(VoiceFile, uuid.UUID(voice["id"]))
+        assert stored.duration_ms == 1234
+        assert stored.codec == "pcm_s16le"
+        assert stored.sample_rate_hz == 16000
+        assert stored.channels == 1

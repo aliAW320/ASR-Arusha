@@ -40,7 +40,13 @@ from cleaner.provider import CleanerResponse
 from cleaner.worker import CleanerWorker
 from diarization.provider import DiarizationTurn
 from diarization.worker import DiarizationWorker
-from conftest import accept_diarization, authorization, mark_diarization_available, register_user
+from conftest import (
+    accept_diarization,
+    authorization,
+    mark_diarization_available,
+    register_user,
+    run_preprocessing,
+)
 
 from meeting_composer.composer import (
     SourceInput,
@@ -475,6 +481,8 @@ async def _meeting_with_finished_voices(client, session_factory, email: str, *, 
         await accept_diarization(client, owner, uploaded.json()["id"])
         voices.append(uploaded.json())
 
+    await run_preprocessing(session_factory, client.storage, times=voice_count)
+
     asr_worker = ASRWorker(
         session_factory=session_factory,
         storage=client.storage,
@@ -515,6 +523,8 @@ async def test_automatic_composition_is_not_queued_until_every_voice_is_ready(
             files={"upload": (f"voice-{index}.wav", io.BytesIO(b"RIFF-audio"), "audio/wav")},
         )
         await accept_diarization(client, owner, uploaded.json()["id"])
+
+    await run_preprocessing(session_factory, client.storage, times=2)
 
     asr_worker = ASRWorker(
         session_factory=session_factory,
@@ -755,6 +765,7 @@ async def test_reprocessed_voice_produces_a_new_meeting_result_version(
         f"/meetings/{meeting['id']}/process", headers=authorization(owner)
     )
     assert reprocessed.status_code == 202, reprocessed.text
+    await run_preprocessing(session_factory, client.storage)
     asr_worker = ASRWorker(
         session_factory=session_factory,
         storage=client.storage,
@@ -812,6 +823,7 @@ async def test_single_voice_meeting_tolerates_a_missing_sequence_number(
         files={"upload": ("voice.wav", io.BytesIO(b"RIFF-audio"), "audio/wav")},
     )
     await accept_diarization(client, owner, uploaded.json()["id"])
+    await run_preprocessing(session_factory, client.storage)
     voice_id = uuid.UUID(uploaded.json()["id"])
     async with session_factory() as session:
         voice = await session.get(VoiceFile, voice_id)
@@ -1191,6 +1203,7 @@ async def test_pipeline_does_not_compose_until_every_voice_finishes_cleaning(
             files={"upload": (f"voice-{index}.wav", io.BytesIO(b"RIFF-audio"), "audio/wav")},
         )
         await accept_diarization(client, owner, uploaded.json()["id"])
+    await run_preprocessing(session_factory, client.storage, times=2)
     asr_worker = ASRWorker(
         session_factory=session_factory,
         storage=client.storage,

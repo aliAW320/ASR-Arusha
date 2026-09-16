@@ -1,9 +1,9 @@
 import io
 import json
 import uuid
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -282,6 +282,16 @@ async def get_result_transcript(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     storage: Annotated[ObjectStorage, Depends(get_object_storage)],
+    variant: Annotated[
+        Literal["cleaned", "original"],
+        Query(
+            description=(
+                "Which stage of the text to return: 'cleaned' (default) is the"
+                " best available version, 'original' is the transcript as ASR"
+                " produced it, before the cleaner rewrote anything."
+            )
+        ),
+    ] = "cleaned",
 ):
     result = await session.scalar(
         select(Result)
@@ -295,33 +305,31 @@ async def get_result_transcript(
     if result is None:
         raise HTTPException(status_code=404, detail="Result not found")
     await _require_voice_access(session, current_user, result.voice)
-    artifact = next(
-        (
-            item
-            for item in result.artifacts
-            if item.artifact_type == ResultArtifactType.CLEANED_TEXT
-            and item.content_type == "application/json"
-        ),
-        None,
-    )
-    if artifact is None:
+    # Best-available first; "original" drops the cleaned artifact from the
+    # chain so the caller can show what the cleaner changed, side by side.
+    preference = [
+        ResultArtifactType.ALIGNED_TRANSCRIPT_JSON,
+        ResultArtifactType.TRANSCRIPT_JSON,
+    ]
+    if variant == "cleaned":
+        preference.insert(0, ResultArtifactType.CLEANED_TEXT)
+
+    artifact = None
+    for artifact_type in preference:
         artifact = next(
             (
                 item
                 for item in result.artifacts
-                if item.artifact_type == ResultArtifactType.ALIGNED_TRANSCRIPT_JSON
+                if item.artifact_type == artifact_type
+                and (
+                    artifact_type != ResultArtifactType.CLEANED_TEXT
+                    or item.content_type == "application/json"
+                )
             ),
             None,
         )
-    if artifact is None:
-        artifact = next(
-            (
-                item
-                for item in result.artifacts
-                if item.artifact_type == ResultArtifactType.TRANSCRIPT_JSON
-            ),
-            None,
-        )
+        if artifact is not None:
+            break
     if artifact is None:
         raise HTTPException(status_code=409, detail="Transcript is not ready")
     buffer = io.BytesIO()

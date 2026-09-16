@@ -428,6 +428,60 @@ async def test_segment_timestamps_complete_pipeline_without_word_timestamps(
         assert stored_voice.status == VoiceStatus.FINISHED
 
 
+@pytest.mark.asyncio
+async def test_transcript_endpoint_serves_the_text_before_and_after_cleaning(
+    client, session_factory
+):
+    owner, _, voice = await _meeting_with_voice(client, "transcript-variant@example.com", session_factory)
+    asr_worker = ASRWorker(
+        session_factory=session_factory,
+        storage=client.storage,
+        settings=get_settings(),
+        provider_factory=lambda _: SuccessfulProvider(),
+    )
+    diarization_worker = DiarizationWorker(
+        session_factory=session_factory,
+        storage=client.storage,
+        settings=get_settings(),
+        provider_factory=lambda _: SuccessfulDiarizationProvider(),
+    )
+    cleaner_worker = CleanerWorker(
+        session_factory=session_factory,
+        storage=client.storage,
+        settings=get_settings(),
+        provider_factory=lambda _: SuccessfulCleanerProvider(),
+    )
+    assert await asr_worker.run_once() is True
+    assert await diarization_worker.run_once() is True
+    assert await cleaner_worker.run_once() is True
+    results = await client.get(
+        f"/voices/{voice['id']}/results", headers=authorization(owner)
+    )
+    result_id = results.json()[0]["id"]
+
+    cleaned = await client.get(
+        f"/results/{result_id}/transcript", headers=authorization(owner)
+    )
+    original = await client.get(
+        f"/results/{result_id}/transcript?variant=original",
+        headers=authorization(owner),
+    )
+    rejected = await client.get(
+        f"/results/{result_id}/transcript?variant=nonsense",
+        headers=authorization(owner),
+    )
+
+    assert cleaned.status_code == 200, cleaned.text
+    assert original.status_code == 200, original.text
+    # The default stays the best available text; "original" reaches past the
+    # cleaner so the UI can put the two versions side by side.
+    assert cleaned.json()["schema_version"] == "cleaned-speaker-transcript/v1"
+    assert original.json()["schema_version"] == "speaker-transcript/v1"
+    assert cleaned.json()["segments"][0]["text"].endswith("اصلاح‌شده")
+    assert not original.json()["segments"][0]["text"].endswith("اصلاح‌شده")
+    assert rejected.status_code == 422
+
+
 class PermanentCleanerFailureProvider:
     async def clean(self, *_args, **_kwargs):
         raise CleanerError(

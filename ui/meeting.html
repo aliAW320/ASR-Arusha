@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#15231f">
   <title>جزئیات جلسه | هم‌نشین</title>
-  <link rel="stylesheet" href="/styles.css?v=20260908b">
-  <link rel="stylesheet" href="/pages.css?v=20260908b">
+  <link rel="stylesheet" href="/styles.css?v=20260912a">
+  <link rel="stylesheet" href="/pages.css?v=20260912a">
 </head>
 <body>
   <div class="app-shell">
@@ -44,7 +44,15 @@
               <input id="meeting-files-input" type="file" name="uploads" accept="audio/*,image/png,image/jpeg,application/pdf" multiple hidden>
             </label>
             <label id="diarization-option" class="choice-row hidden"><input id="diarization-enabled" type="checkbox"><span><strong>تفکیک گویندگان</strong><small>صدای هر گوینده جدا و در متن مشخص شود.</small></span></label>
+            <div id="staged-files" class="staged-files hidden">
+              <div class="staged-heading"><p class="section-index">آماده ارسال</p><span id="staged-count" class="count-badge">۰</span><button id="clear-staged" class="text-button" type="button"><svg class="icon"><use href="#i-x"/></svg> پاک کردن همه</button></div>
+              <ul id="staged-list" class="staged-list" aria-live="polite"></ul>
+            </div>
             <p id="selected-files" class="selected-files" aria-live="polite"></p>
+            <div class="upload-actions">
+              <button id="start-process" class="button primary" type="button" disabled><svg class="icon"><use href="#i-play"/></svg> شروع پردازش</button>
+              <small id="start-process-hint">تا زمانی که این دکمه را نزنید، هیچ فایلی ارسال نمی‌شود.</small>
+            </div>
             <div id="upload-progress" class="upload-progress hidden" role="status"><span></span><p>در حال بارگذاری دسته‌ای فایل‌ها…</p></div>
             <div id="voice-list" class="stack-list" aria-live="polite"></div>
             <div class="subsection-heading"><h3>پیوست‌های جلسه</h3><span id="attachment-count" class="count-badge">۰</span></div>
@@ -72,7 +80,14 @@
       <div class="modal-actions"><button class="button primary" type="submit">ذخیره تغییرات</button><button class="button secondary" type="button" data-close-modal>انصراف</button></div>
     </form>
   </dialog>
+  <dialog id="diarization-confirm" class="modal" aria-labelledby="diarization-confirm-title">
+    <form method="dialog">
+      <div class="modal-heading"><div><p class="eyebrow">پیش از شروع پردازش</p><h2 id="diarization-confirm-title">بدون تفکیک گویندگان ادامه می‌دهید؟</h2></div><button type="button" class="icon-button" data-close-diarization aria-label="بستن"><svg class="icon"><use href="#i-x"/></svg></button></div>
+      <p class="modal-note">سرویس تفکیک گویندگان هم‌اکنون در دسترس است، اما آن را انتخاب نکرده‌اید. با فعال‌کردن آن، گفته‌های هر گوینده جدا و با نام گوینده در متن مشخص می‌شود. این انتخاب پس از شروع پردازش قابل تغییر نیست.</p>
+      <div class="modal-actions"><button id="confirm-with-diarization" class="button primary" type="button"><svg class="icon"><use href="#i-users"/></svg> با تفکیک گویندگان ادامه بده</button><button id="confirm-without-diarization" class="button secondary" type="button">بله، بدون تفکیک ادامه بده</button></div>
+    </form>
+  </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="/js/meeting-page.js?v=20260908b"></script>
+  <script type="module" src="/js/meeting-page.js?v=20260912a"></script>
 </body>
 </html>

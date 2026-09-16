@@ -2,7 +2,7 @@
 <html lang="fa" dir="rtl">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#15231f">
-  <title>متن جلسه | هم‌نشین</title><link rel="stylesheet" href="/styles.css?v=20260908b"><link rel="stylesheet" href="/pages.css?v=20260908b">
+  <title>متن جلسه | هم‌نشین</title><link rel="stylesheet" href="/styles.css?v=20260912a"><link rel="stylesheet" href="/pages.css?v=20260912a">
 </head>
 <body>
   <div class="app-shell">
@@ -14,12 +14,22 @@
         <article class="panel transcript-page-panel">
           <header class="transcript-header"><div><p class="section-index">رونویسی فایل</p><h2 id="transcript-title">متن تبدیل‌شده</h2><p id="transcript-meta" class="muted"></p></div><span id="transcript-language" class="status-pill"></span></header>
           <section id="processing-error" class="processing-error hidden" role="alert"><strong id="processing-error-title"></strong><code id="processing-error-code"></code><p id="processing-error-message"></p></section>
+          <div id="variant-toolbar" class="variant-toolbar hidden" role="group" aria-label="نسخه متن">
+            <button class="variant-tab" type="button" data-variant="cleaned" aria-pressed="true">پس از پاک‌سازی</button>
+            <button class="variant-tab" type="button" data-variant="original" aria-pressed="false">پیش از پاک‌سازی</button>
+            <button class="variant-tab" type="button" data-variant="compare" aria-pressed="false"><svg class="icon"><use href="#i-document"/></svg> مقایسه</button>
+          </div>
+          <p id="variant-note" class="muted variant-note"></p>
           <div class="transcript-ruler" aria-hidden="true"><span>۰۰:۰۰</span><i></i><i></i><i></i><i></i><i></i><i></i><span>پایان</span></div>
           <div id="transcript-content" class="transcript-full" aria-live="polite">در حال بارگذاری متن…</div>
+          <div id="transcript-compare" class="transcript-compare hidden">
+            <section class="compare-pane"><header><span class="compare-label before">پیش از پاک‌سازی</span><small>خروجی خام رونویسی</small></header><div id="compare-original" class="transcript-full"></div></section>
+            <section class="compare-pane"><header><span class="compare-label after">پس از پاک‌سازی</span><small>نسخه‌ای که به پایگاه دانش می‌رود</small></header><div id="compare-cleaned" class="transcript-full"></div></section>
+          </div>
         </article>
       </main>
     </section>
   </div>
-  <div id="toast" class="toast" role="status" aria-live="polite"></div><script type="module" src="/js/transcript-page.js?v=20260908b"></script>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div><script type="module" src="/js/transcript-page.js?v=20260912a"></script>
 </body>
 </html>

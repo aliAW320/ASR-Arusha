@@ -1,5 +1,5 @@
-import { api } from "./api.js?v=20260908b";
-import { $, escapeHtml, formatDate, renderSidebar, requireUser, toast } from "./layout.js?v=20260908b";
+import { api } from "./api.js?v=20260912a";
+import { $, escapeHtml, formatDate, renderSidebar, requireUser, toast } from "./layout.js?v=20260912a";
 
 const EVENT_LABELS = {
   "auth.registered": "ثبت‌نام کاربر",

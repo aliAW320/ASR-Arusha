@@ -1,4 +1,4 @@
-import { api, getToken, saveSession } from "./api.js?v=20260908b";
+import { api, getToken, saveSession } from "./api.js?v=20260912a";
 
 if (getToken()) location.replace("/meetings.html");
 const form = document.querySelector("#auth-form");

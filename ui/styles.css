@@ -760,6 +760,32 @@ textarea { min-height: 92px; resize: vertical; line-height: 1.7; }
 }
 .choice-row input { width: 20px; min-height: 20px; accent-color: var(--accent-600); }
 .selected-files { margin-bottom: var(--space-3); color: var(--text-500); font-size: 12px; overflow-wrap: anywhere; }
+
+/* Files chosen but deliberately not sent yet -- they leave the browser only
+   when «شروع پردازش» is pressed. */
+.staged-files {
+  margin-bottom: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-inline-start: 3px solid var(--accent-500);
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+}
+.staged-heading { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-2); }
+.staged-heading .text-button { margin-inline-start: auto; font-size: 12px; }
+.staged-list { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+
+.upload-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-4);
+}
+.upload-actions small { color: var(--text-500); font-size: 12px; line-height: 1.6; }
+.upload-actions .button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.modal-note { margin: var(--space-2) 0 0; color: var(--text-500); font-size: 13px; line-height: 1.9; }
 .subsection-heading { display: flex; align-items: center; gap: var(--space-2); margin: var(--space-6) 0 var(--space-3); }
 .subsection-heading h3 { font-size: 14px; }
 .count-badge { display: grid; place-items: center; min-width: 24px; height: 24px; padding-inline: 7px; border-radius: var(--radius-pill); background: var(--surface-100); color: var(--text-500); font-size: 11px; font-weight: 700; }

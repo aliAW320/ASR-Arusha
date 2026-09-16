@@ -22,6 +22,7 @@ const sprite = `
   <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
   <symbol id="i-paperclip" viewBox="0 0 24 24"><path d="m15.5 8.5-6 6a2.5 2.5 0 0 0 3.5 3.5l6.5-6.5a4.5 4.5 0 0 0-6.4-6.4l-7 7a6 6 0 0 0 8.5 8.5"/></symbol>
   <symbol id="i-inbox" viewBox="0 0 24 24"><path d="m4 14 3-9h10l3 9M4 14h5l1.2 2.5h3.6L15 14h5v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.2v13.6L19 12z"/></symbol>
   <symbol id="i-wave" viewBox="0 0 24 24"><path d="M3 12h2l2-6 3 12 3-14 3 12 2-4h3"/></symbol>
 </svg>`;
 

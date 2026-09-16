@@ -1,5 +1,5 @@
-import { api, clearSession, getStoredUser, getToken } from "./api.js?v=20260908b";
-import { icon, mountIconSprite } from "./icons.js?v=20260908b";
+import { api, clearSession, getStoredUser, getToken } from "./api.js?v=20260912a";
+import { icon, mountIconSprite } from "./icons.js?v=20260912a";
 
 mountIconSprite();
 

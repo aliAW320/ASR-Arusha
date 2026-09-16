@@ -1,5 +1,5 @@
-import { api } from "./api.js?v=20260908b";
-import { $, escapeHtml, faNumber, formatDate, renderSidebar, requireUser, toast } from "./layout.js?v=20260908b";
+import { api } from "./api.js?v=20260912a";
+import { $, escapeHtml, faNumber, formatDate, renderSidebar, requireUser, toast } from "./layout.js?v=20260912a";
 
 const meetingId = new URLSearchParams(location.search).get("id");
 let meeting;
@@ -155,6 +155,7 @@ if (user) {
   api("/processing/diarization").then((availability) => {
     diarizationAvailable = Boolean(availability.available && availability.enabled);
     $("#diarization-option").classList.toggle("hidden", !diarizationAvailable);
+    renderStagedFiles();
   }).catch(() => { diarizationAvailable = false; });
 }
 setInterval(pollCollections, 3000);
@@ -179,29 +180,94 @@ $("#delete-meeting").addEventListener("click", async () => {
   try { await api(`/meetings/${meetingId}`, { method: "DELETE" }); location.replace("/meetings.html"); }
   catch (exception) { toast(exception.message, "error"); }
 });
-$("#meeting-files-input").addEventListener("change", async (event) => {
-  const files = [...event.target.files]; if (!files.length) return;
-  const progress = $("#upload-progress"); progress.classList.remove("hidden");
-  $("#selected-files").textContent = `${faNumber(files.length)} فایل انتخاب شد: ${files.map((file) => file.name).join("، ")}`;
+// Files wait here until the user presses «شروع پردازش»; nothing reaches the
+// backend — and so nothing starts processing — before that.
+const stagedFiles = [];
+let uploading = false;
+const fileKey = (file) => `${file.name}:${file.size}`;
+const stagedIcon = (file) => (file.type === "application/pdf" ? "file-pdf" : file.type.startsWith("image/") ? "image" : "mic");
+
+function renderStagedFiles() {
+  $("#staged-files").classList.toggle("hidden", !stagedFiles.length);
+  $("#staged-count").textContent = faNumber(stagedFiles.length);
+  $("#staged-list").innerHTML = stagedFiles.map((file, index) => `<li class="list-row"><div class="list-row-main"><span class="file-icon"><svg class="icon"><use href="#i-${stagedIcon(file)}"/></svg></span><div><strong>${escapeHtml(file.name)}</strong><small>${faNumber((file.size / 1048576).toFixed(2))} مگابایت · هنوز ارسال نشده</small></div></div><button class="delete-icon" type="button" aria-label="حذف ${escapeHtml(file.name)} از فهرست" data-unstage="${index}"><svg class="icon"><use href="#i-x"/></svg></button></li>`).join("");
+  $("#start-process").disabled = uploading || !stagedFiles.length;
+  $("#selected-files").textContent = stagedFiles.length ? `${faNumber(stagedFiles.length)} فایل آماده ارسال است.` : "";
+  $("#start-process-hint").textContent = !stagedFiles.length
+    ? "تا زمانی که این دکمه را نزنید، هیچ فایلی ارسال نمی‌شود."
+    : diarizationAvailable
+      ? "پیش از ارسال، تکلیف تفکیک گویندگان پرسیده می‌شود."
+      : "فایل‌ها ارسال و بی‌درنگ وارد مسیر پردازش می‌شوند.";
+}
+
+function askAboutDiarization() {
+  // Resolves true (do diarize), false (go ahead without it) or null (cancel).
+  const dialog = $("#diarization-confirm");
+  return new Promise((resolve) => {
+    const answer = (value) => { resolve(value); dialog.close(); };
+    $("#confirm-with-diarization").onclick = () => answer(true);
+    $("#confirm-without-diarization").onclick = () => answer(false);
+    $("[data-close-diarization]").onclick = () => answer(null);
+    dialog.addEventListener("close", () => resolve(null), { once: true });
+    dialog.showModal();
+  });
+}
+
+async function startProcessing(withDiarization) {
+  const files = [...stagedFiles];
+  const progress = $("#upload-progress");
+  uploading = true;
+  $("#start-process").disabled = true;
+  progress.classList.remove("hidden");
   const data = new FormData();
   files.forEach((file) => data.append("uploads", file));
   try {
     const result = await api(`/meetings/${meetingId}/files`, { method: "POST", body: data });
+    stagedFiles.length = 0;
     if (diarizationAvailable && result.voices.length) {
-      const enabled = $("#diarization-enabled").checked;
       try {
-        await Promise.all(result.voices.map((voice) => api(`/voices/${voice.id}/diarization`, { method: "POST", body: JSON.stringify({ enabled }) })));
+        await Promise.all(result.voices.map((voice) => api(`/voices/${voice.id}/diarization`, { method: "POST", body: JSON.stringify({ enabled: withDiarization }) })));
       } catch (exception) {
         toast(`فایل‌ها ذخیره شدند، اما انتخاب تفکیک گویندگان ثبت نشد: ${exception.message}`, "error");
         await refreshCollections();
         return;
       }
     }
-    toast(`${faNumber(files.length)} فایل با موفقیت ذخیره شد.`);
+    toast(`پردازش ${faNumber(files.length)} فایل آغاز شد.`);
     await refreshCollections();
   }
   catch (exception) { toast(exception.message, "error"); }
-  finally { progress.classList.add("hidden"); event.target.value = ""; $("#selected-files").textContent = ""; }
+  finally { uploading = false; progress.classList.add("hidden"); renderStagedFiles(); }
+}
+
+$("#meeting-files-input").addEventListener("change", (event) => {
+  const known = new Set(stagedFiles.map(fileKey));
+  for (const file of event.target.files) {
+    if (known.has(fileKey(file))) continue;
+    known.add(fileKey(file));
+    stagedFiles.push(file);
+  }
+  event.target.value = "";
+  renderStagedFiles();
+});
+$("#staged-list").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-unstage]"); if (!button) return;
+  stagedFiles.splice(Number(button.dataset.unstage), 1);
+  renderStagedFiles();
+});
+$("#clear-staged").addEventListener("click", () => { stagedFiles.length = 0; renderStagedFiles(); });
+$("#start-process").addEventListener("click", async () => {
+  if (uploading || !stagedFiles.length) return;
+  let withDiarization = $("#diarization-enabled").checked;
+  if (diarizationAvailable && !withDiarization) {
+    // The service is up and the user passed on it — give them one more chance
+    // before the choice is locked in for these voices.
+    const answer = await askAboutDiarization();
+    if (answer === null) return;
+    withDiarization = answer;
+    $("#diarization-enabled").checked = answer;
+  }
+  await startProcessing(diarizationAvailable && withDiarization);
 });
 $("#voice-list").addEventListener("click", async (event) => {
   const button = event.target.closest("[data-delete-voice]"); if (!button || !confirm("فایل حذف شود؟")) return;

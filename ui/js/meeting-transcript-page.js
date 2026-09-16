@@ -1,5 +1,5 @@
-import { api } from "./api.js?v=20260908b";
-import { $, escapeHtml, formatDate, renderSidebar, requireUser, toast } from "./layout.js?v=20260908b";
+import { api } from "./api.js?v=20260912a";
+import { $, escapeHtml, formatDate, renderSidebar, requireUser, toast } from "./layout.js?v=20260912a";
 
 const meetingId = new URLSearchParams(location.search).get("id");
 if (!meetingId) location.replace("/meetings.html");

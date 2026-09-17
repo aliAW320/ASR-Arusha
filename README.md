@@ -1,79 +1,206 @@
-# Persian Meeting Platform
+# Hamneshin — Meeting Intelligence Platform
 
-Backend پایه سامانه Meeting Intelligence با FastAPI، PostgreSQL و MinIO به‌همراه UI و worker مستقل ASR. هیچ runtime یا کتابخانه ML در image بک‌اند نصب نمی‌شود و ارتباط ASR فقط از طریق API سازگار با OpenAI انجام می‌شود.
+Hamneshin (هم‌نشین) turns meeting recordings into published knowledge-base
+documents. You upload audio and supporting files; the platform normalises the
+audio, transcribes it, optionally separates speakers, cleans the text,
+composes one transcript per meeting, summarises it, and publishes the result
+to an Outline knowledge base — without further manual steps.
 
-## قابلیت‌های این فاز
+The backend is FastAPI on PostgreSQL, MinIO and RabbitMQ. No machine-learning
+runtime or model weight lives in the API image: speech recognition and text
+cleaning are reached over an OpenAI-compatible HTTP API, and speaker
+diarization runs in its own optional container.
 
-- ثبت‌نام و ورود با پاسخ یکسان شامل access token و اطلاعات کاربر
-- جداسازی حساب داخلی `User` از هویت ورود `AuthIdentity` برای اتصال آینده به احراز هویت مرکزی
-- نقش سراسری `USER` و `ADMIN`
-- bootstrap کنترل‌شده و idempotent ادمین اولیه
-- CRUD جلسه و مدیریت اعضای ثبت‌شده
-- نقش‌های جلسه `OWNER`، `CONTRIBUTOR` و `VIEWER` با policy متمرکز و قابل توسعه
-- آپلود multipart صوت تا سقف پیش‌فرض ۵۰۰ مگابایت در MinIO
-- نگهداری bucket/key/checksum و metadata آپلود در PostgreSQL
-- سه بار تلاش برای ثبت metadata و حذف object از MinIO پس از شکست نهایی
-- audit log غیرقابل حذف برای تغییرات business و رخدادهای احراز هویت/امنیتی
-- structured logging روی stdout/stderr با JSON در production/test و خروجی خوانا در development
-- حفظ `request_id` و `correlation_id` در پاسخ HTTP، Log و History
-- migration با Alembic؛ شامل پذیرش schema قدیمی ساخته‌شده توسط `create_all`
-- شروع صریح پردازش Meeting و اجرای asynchronous تبدیل صوت به متن در سرویس مستقل ASR
-- سه تلاش پایدار و قابل مشاهده برای خطاهای موقت ASR و توقف فوری برای خطاهای دائمی
-- ذخیره transcript استاندارد و متن خام در MinIO و provenance آن‌ها در PostgreSQL
+---
 
-## اجرا با Docker Compose
+## Contents
 
-تنظیمات را آماده کنید:
+- [Architecture](#architecture)
+- [Processing pipeline](#processing-pipeline)
+- [Running the stack](#running-the-stack)
+- [Configuration](#configuration)
+- [Creating the first administrator](#creating-the-first-administrator)
+- [Permissions](#permissions)
+- [HTTP API](#http-api)
+- [Web interface](#web-interface)
+- [Storage layout](#storage-layout)
+- [Messaging and durability](#messaging-and-durability)
+- [Logging and correlation](#logging-and-correlation)
+- [Database migrations](#database-migrations)
+- [Tests](#tests)
+- [CI/CD](#cicd)
+
+---
+
+## Architecture
+
+Six containers, defined in `docker-compose.yml`:
+
+| Service | Image source | Role |
+|---|---|---|
+| `ui` | `Docker/ui.Dockerfile` | Nginx serving the static Persian RTL front end, proxying `/api` to the backend |
+| `api` | `Docker/api.Dockerfile` | FastAPI application **and** all background workers |
+| `diarization` | `Docker/diarization.Dockerfile` | Speaker diarization (pyannote); optional |
+| `postgres` | `postgres` | System of record |
+| `minio` | `minio` | Object storage for audio, attachments and transcripts |
+| `rabbitmq` | `rabbitmq` | Work queues |
+
+**The API process also runs the workers.** `broker-dispatcher`,
+`preprocess-worker`, `asr-worker`, `cleaner-worker`,
+`meeting-composer-worker` and `mcp-worker` are asyncio background tasks
+supervised inside the API process — see `app.main.BACKGROUND_WORKERS`. Each is
+restarted automatically if it stops.
+
+Diarization is the one exception. Its torch/pyannote dependencies are far too
+heavy to carry in the API image, so it ships as a separate container, and the
+platform treats it as **optional at runtime** rather than assumed — see
+[Optional diarization](#optional-diarization).
+
+### The ML boundary
+
+The API image contains no model runtime and no model weights. Transcription
+and cleaning go through an HTTP adapter to an external OpenAI-compatible
+endpoint (`BASE_URL`). Only the `diarization` service loads a model, and it
+has its own manifest, Dockerfile and process.
+
+---
+
+## Processing pipeline
+
+```
+upload ──▶ preprocess ──▶ transcription ──┐
+                                          ├──▶ alignment ──▶ cleaning ──▶ meeting compose ──▶ summarise + publish
+                          diarization ────┘
+                          (optional)
+```
+
+Uploading audio creates a `Result` and queues `preprocess`, which converts the
+file to canonical 16 kHz mono PCM WAV. Transcription and diarization then run
+concurrently; a durable PostgreSQL barrier releases a single `cleaning` job
+once both have finished. When every voice in a meeting has been cleaned, the
+composer merges them into one meeting transcript, and publication follows
+immediately — summarising the transcript and writing it to the knowledge base
+over MCP. No manual approval gate stands anywhere in this chain.
+
+Processing stages are `preprocess`, `transcription`, `diarization`,
+`alignment`, `cleaning`, `meeting_compose` and `minutes_generation`.
+
+### Optional diarization
+
+Diarization needs its own GPU-capable container, which may or may not be
+running. Rather than assume it, the backend decides per voice at upload time
+and records the answer on `VoiceFile.diarization_decision`:
+
+| Decision | Meaning |
+|---|---|
+| `unavailable` | No diarization worker was alive; the voice goes straight from transcription to cleaning |
+| `pending` | A worker is alive; the pipeline waits for the user to answer before cleaning anything |
+| `enabled` | The user asked for speaker separation |
+| `skipped` | The user declined it |
+
+Availability is a liveness question, not a configuration flag: the diarization
+worker writes a heartbeat to `service_heartbeats`, and
+`GET /processing/diarization` reports whether that heartbeat is fresher than
+`DIARIZATION_HEARTBEAT_TTL_SECONDS`.
+
+Holding the pipeline on `pending` matters. Cleaning the raw ASR text
+immediately would discard the speaker-attributed transcript the user may still
+ask for, so nothing downstream runs until the question is answered. Runs
+without diarization still fill the same `speaker-transcript/v1` artifact slot,
+labelling every segment `SPEAKER_UNKNOWN`, so the cleaner, composer and
+publication stages need no special case.
+
+---
+
+## Running the stack
+
+Requirements: Docker with Compose. For running tests or tooling outside
+Docker, Python 3.11 and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 cp .env.example .env
-```
-
-حداقل `JWT_SECRET_KEY`، اطلاعات PostgreSQL و MinIO را تغییر دهید. سپس:
-
-```bash
+# edit .env — at minimum JWT_SECRET_KEY, the PostgreSQL and MinIO
+# credentials, TRANSCRIPT_API_KEY and KB_API_KEY
 docker compose up --build
 ```
 
-`docker-compose.yml` طبق قرارداد پروژه در ریشه است و Dockerfile بک‌اند در `Docker/api.Dockerfile` قرار دارد. container API پیش از شروع FastAPI، `alembic upgrade head` را اجرا می‌کند.
-PostgreSQL فقط روی loopback میزبان و پورت `5252` منتشر می‌شود؛ ارتباط داخلی containerها همچنان از پورت `5432` استفاده می‌کند.
+The API container runs `alembic upgrade head` before starting FastAPI.
 
-پس از آماده‌شدن سرویس‌ها:
+Once healthy:
 
-- UI در `http://127.0.0.1:3000`
-- API در `http://127.0.0.1:8000`
-- Swagger در `http://127.0.0.1:8000/docs`
+| Endpoint | URL |
+|---|---|
+| Web interface | http://127.0.0.1:3000 |
+| API | http://127.0.0.1:8000 |
+| OpenAPI / Swagger | http://127.0.0.1:8000/docs |
+| MinIO console | http://127.0.0.1:9001 |
+| RabbitMQ management | http://127.0.0.1:15672 |
 
-## UI مستقل
+PostgreSQL is published on host loopback port `5252` only; containers still
+reach it on `5432` internally.
 
-UI یک رابط فارسی و RTL چندصفحه‌ای است که به‌عنوان سرویس مستقل Nginx اجرا می‌شود. Dockerfile آن در `Docker/ui.Dockerfile`، تنظیم Nginx در `Docker/ui.nginx.conf` و source آن در پوشه `ui/` قرار دارد. مسیر `/api` در Nginx به سرویس backend پروکسی می‌شود؛ بنابراین مرورگر فقط با origin خود UI ارتباط دارد و نیازی به فعال‌کردن CORS در backend نیست.
+To run without diarization, simply omit the service — the pipeline detects the
+missing heartbeat and routes around it:
 
-صفحات و منطق هر حوزه جدا نگهداری می‌شوند:
-
-```text
-ui/login.html             + ui/js/auth-page.js
-ui/register.html          + ui/js/auth-page.js
-ui/meetings.html          + ui/js/meetings-page.js
-ui/meeting.html           + ui/js/meeting-page.js
-ui/history.html           + ui/js/history-page.js
-ui/js/api.js              # ارتباط مشترک با backend و session
-ui/js/layout.js           # layout، sidebar و ابزارهای نمایشی مشترک
+```bash
+docker compose up -d ui api postgres minio rabbitmq
 ```
 
-قابلیت‌های فعلی UI:
+---
 
-- ثبت‌نام و ورود و نگهداری نشست
-- فهرست، ساخت، ویرایش و حذف Meeting
-- مشاهده، افزودن، تغییر نقش و حذف اعضا
-- آپلود، مشاهده و حذف فایل صوتی
-- نمایش و فیلتر History برای ادمین
-- ارسال `X-Request-ID` برای اتصال درخواست‌های UI به Logging و History
+## Configuration
 
-پورت UI از `UI_PORT` قابل تغییر است. UI وابستگی runtime یا build به Node ندارد و فایل‌های استاتیک مستقیماً توسط Nginx ارائه می‌شوند.
+All settings come from the environment; `.env.example` is the authoritative
+list. The groups that matter most:
 
-## ساخت یا به‌روزرسانی ادمین اولیه
+```text
+# Runtime
+APP_ENV=development          # development | test | production
+LOG_LEVEL=INFO
+LOG_FORMAT=auto              # auto | json | console
+API_PORT=8000
+UI_PORT=3000
 
-در `.env` مقدارهای زیر را تنظیم کنید:
+# Speech recognition (OpenAI-compatible endpoint)
+BASE_URL=https://example.com/v1
+TRANSCRIPT_API_KEY=...
+TRANSCRIPT_MODEL_NAME=whisper-large-v3-persian
+ASR_REQUEST_TIMEOUT_SECONDS=600
+ASR_NUM_BEAMS=5
+ASR_MAX_ATTEMPTS=3
+
+# Speaker diarization (optional service)
+DIARIZATION_ENABLED=true
+DIARIZATION_MODEL_NAME=pyannote/speaker-diarization-community-1
+DIARIZATION_DEVICE=cpu
+DIARIZATION_HEARTBEAT_INTERVAL_SECONDS=15
+DIARIZATION_HEARTBEAT_TTL_SECONDS=60
+HUGGINGFACE_TOKEN=...
+
+# Text cleaning and summarisation
+CLEANER_MODEL_NAME=openai/Qwen3.8-27B
+CLEANER_CHUNK_MAX_CHARS=12000
+SUMMARY_MODEL_NAME=openai/Qwen3.8-27B
+SUMMARY_MULTIMODAL_ENABLED=true
+
+# Knowledge base (Outline over MCP)
+KB_BASE_URL=https://kb.arusha.dev
+KB_API_KEY=...
+MEETING_PUBLICATION_DEFAULT_PATH=...
+
+# Upload limits
+VOICE_UPLOAD_MAX_BYTES=524288000        # 500 MB per audio file
+MEETING_ATTACHMENT_MAX_BYTES=52428800   # 50 MB per attachment
+```
+
+Every stage has its own `*_MAX_ATTEMPTS`, `*_REQUEST_TIMEOUT_SECONDS` and
+`*_WORKER_NAME`, so retry behaviour is tunable per stage without code changes.
+
+---
+
+## Creating the first administrator
+
+Set the credentials in `.env`:
 
 ```text
 ADMIN_EMAIL=admin@example.com
@@ -81,183 +208,291 @@ ADMIN_PASSWORD=a-strong-password
 ADMIN_FULL_NAME=Administrator
 ```
 
-سپس فرمان idempotent زیر را اجرا کنید:
+Then run the idempotent bootstrap command:
 
 ```bash
 docker compose exec api uv run python -m app.cli.create_admin
 ```
 
-ثبت‌نام عمومی همیشه کاربر با نقش `USER` می‌سازد. نقش سراسری کاربر از نقش او در یک Meeting مستقل است.
+Public registration always creates a `USER`. A user's global role is
+independent of their role in any given meeting.
 
-## ماتریس دسترسی Meeting
+---
 
-| نقش | مشاهده | ویرایش Meeting | مدیریت Voice | مدیریت اعضا | حذف Meeting |
-|---|---:|---:|---:|---:|---:|
-| OWNER | بله | بله | بله | بله | بله |
-| CONTRIBUTOR | بله | بله | بله | خیر | خیر |
-| VIEWER | بله | خیر | خیر | خیر | خیر |
-| ADMIN | همه Meetingها | بله | بله | بله | بله |
+## Permissions
 
-ماتریس در `app/services/permissions.py` متمرکز است تا تغییر نقش‌ها در آینده به routeها نشت نکند.
+Two independent layers: a global role (`USER` or `ADMIN`) and a per-meeting
+role.
 
-## APIهای اصلی
+| Meeting role | View | Edit meeting | Manage voices | Manage members | Delete meeting |
+|---|:-:|:-:|:-:|:-:|:-:|
+| `OWNER` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `CONTRIBUTOR` | ✓ | ✓ | ✓ | — | — |
+| `VIEWER` | ✓ | — | — | — | — |
+| `ADMIN` (global) | all meetings | ✓ | ✓ | ✓ | ✓ |
+
+The matrix lives in `app/services/permissions.py`, deliberately centralised so
+that changing a role's reach never leaks into individual routes.
+
+Accounts are modelled as an internal `User` separate from the `AuthIdentity`
+used to sign in, so a central identity provider can be added later without
+touching the account model.
+
+---
+
+## HTTP API
+
+Interactive documentation, including every query parameter and schema, is
+served at `/docs`.
 
 ```text
+# Authentication
 POST   /auth/register
 POST   /auth/login
 GET    /auth/me
 
-POST   /meetings
+# Meetings and membership
 GET    /meetings
+POST   /meetings
 GET    /meetings/{meeting_id}
 PATCH  /meetings/{meeting_id}
 DELETE /meetings/{meeting_id}
-
 GET    /meetings/{meeting_id}/members
 POST   /meetings/{meeting_id}/members
 PATCH  /meetings/{meeting_id}/members/{user_id}
 DELETE /meetings/{meeting_id}/members/{user_id}
 
+# Uploads — audio and attachments in one request
+POST   /meetings/{meeting_id}/files
 POST   /meetings/{meeting_id}/voices
 GET    /meetings/{meeting_id}/voices
 GET    /voices/{voice_id}
 DELETE /voices/{voice_id}
-GET    /voices                         # admin only
+GET    /voices                                   # admin only
+GET    /meetings/{meeting_id}/attachments
+POST   /meetings/{meeting_id}/attachments
+DELETE /meetings/{meeting_id}/attachments/{attachment_id}
 
-POST   /meetings/{meeting_id}/process # 202 Accepted
+# Processing
+POST   /meetings/{meeting_id}/process            # 202 Accepted
 GET    /meetings/{meeting_id}/processing
 GET    /processing/jobs/{job_id}
+GET    /processing/diarization                   # is a worker alive?
+POST   /voices/{voice_id}/diarization            # answer yes/no, once per voice
+
+# Per-voice results
 GET    /voices/{voice_id}/results
 GET    /results/{result_id}
+GET    /results/{result_id}/transcript
 
-GET    /history                        # admin only, immutable
+# Composed meeting transcript
+POST   /meetings/{meeting_id}/compose
+GET    /meetings/{meeting_id}/results
+GET    /meetings/{meeting_id}/transcript
+GET    /meeting-results/{meeting_result_id}
+GET    /meeting-results/{meeting_result_id}/transcript
+
+# Knowledge-base publication
+GET    /meetings/{meeting_id}/publication
+PATCH  /meetings/{meeting_id}/publication        # change destination path
+
+# Speakers
+GET    /speakers
+POST   /speakers/register
+GET    /speakers/{speaker_id}
+PATCH  /speakers/{speaker_id}
+DELETE /speakers/{speaker_id}
+POST   /speakers/{speaker_id}/voice-samples
+
+# Audit trail
+GET    /history                                  # admin only, append-only
+
+GET    /health
 ```
 
-Swagger UI پس از اجرا در `/docs` در دسترس است.
+`POST /meetings/{meeting_id}/files` accepts audio and attachments together in
+a single multipart request, sorting each file by content type and magic bytes.
+Accepted attachment types are PNG, JPEG and PDF.
 
-## Logging و Correlation
+---
 
-هر request یک `X-Request-ID` و `X-Correlation-ID` معتبر دریافت می‌کند. اگر client شناسه‌ای با حداکثر ۱۰۰ کاراکتر از مجموعه `A-Z a-z 0-9 . _ : -` بفرستد، همان شناسه حفظ می‌شود؛ در غیر این صورت UUID جدید ساخته می‌شود. اگر correlation ارسال نشود، مقدار request ID را می‌گیرد. هر دو شناسه در header پاسخ نیز برگردانده می‌شوند.
+## Web interface
 
-در production و test هر خط stdout یک JSON مستقل با قرارداد پایه زیر است:
+A multi-page Persian RTL interface with no build step: plain ES modules,
+served directly by Nginx from `ui/`. Nginx proxies `/api` to the backend, so
+the browser only ever talks to the UI's own origin and the backend needs no
+CORS configuration.
 
 ```text
-timestamp, level, service, environment, event, message
-request_id, correlation_id, client_ip
-user_id, meeting_id, voice_id       # در صورت وجود context
-method, route, status_code, duration_ms
+ui/login.html               ui/js/auth-page.js
+ui/register.html            ui/js/auth-page.js
+ui/meetings.html            ui/js/meetings-page.js
+ui/meeting.html             ui/js/meeting-page.js          # uploads, pipeline, members
+ui/transcript.html          ui/js/transcript-page.js       # one voice, before/after cleaning
+ui/meeting-transcript.html  ui/js/meeting-transcript-page.js
+ui/history.html             ui/js/history-page.js
+ui/js/api.js                # backend calls and session handling
+ui/js/layout.js             # shell, sidebar, shared helpers
+ui/js/icons.js              # inline SVG sprite
+ui/styles.css               # design system
+ui/pages.css                # page-specific styles
 ```
 
-`route` الگوی route است و query string در access log ثبت نمی‌شود. body، query، Cookie، Authorization، password، token، secret، transcript و headerهای خام ثبت نمی‌شوند؛ email نیز mask می‌شود. Exception مدیریت‌نشده یک‌بار همراه stack trace و context ثبت می‌شود و پاسخ عمومی ۵۰۰ شامل request ID است. رخداد `/health` در سطح `DEBUG` ثبت می‌شود تا در production پرحجم نباشد.
+Current capabilities: registration and sign-in; meeting CRUD; member
+management; batch upload of audio and attachments staged behind an explicit
+"start processing" action; live pipeline status per stage with the failing
+stage and error code surfaced; per-voice transcripts shown before and after
+cleaning; the composed meeting transcript; publication status and destination;
+and a filterable audit trail for administrators.
 
-تنظیمات قابل تغییر:
+Every request carries an `X-Request-ID`, which ties UI actions to backend logs
+and history entries.
 
-```text
-APP_ENV=development        # development | test | production
-SERVICE_NAME=meeting-api
-LOG_LEVEL=INFO
-LOG_FORMAT=auto            # auto | json | console
-```
+---
 
-در حالت `auto`، development خروجی console و test/production خروجی JSON دارند. برنامه فایل log و rotation مدیریت نمی‌کند؛ زیرساخت container می‌تواند stdout/stderr را بعداً به Loki/OpenSearch یا سامانه مشابه ارسال کند. `trace_id` تا زمان اضافه‌شدن tracing واقعی تولید نمی‌شود.
+## Storage layout
 
-History یک audit trail تجاری جدا از log عملیاتی است، ولی `request_id` و `correlation_id` مشترک دارد. ادمین می‌تواند `GET /history` را علاوه بر event/actor با queryهای `request_id` و `correlation_id` فیلتر کند.
-
-## پردازش صوت و RabbitMQ
-
-آپلود موفق Voice به‌صورت خودکار یک Result و دو Job مستقل برای ASR و diarization ایجاد می‌کند. ایجاد Job، Attempt و پیام outbox در همان transaction دیتابیس انجام می‌شود؛ بنابراین قطع‌شدن RabbitMQ باعث گم‌شدن کار نمی‌شود. حلقهٔ dispatch پیام‌های outbox را با publisher-confirm به RabbitMQ می‌فرستد و workerها با `prefetch=1` آن‌ها را مصرف می‌کنند. به‌جز diarization (که به دلیل وابستگی سنگین torch/pyannote container/Dockerfile جدا دارد)، dispatcher و همهٔ workerها (asr، cleaner، meeting-composer، mcp) به‌صورت background task داخل همان process که API را serve می‌کند اجرا می‌شوند -- به `app.main.BACKGROUND_WORKERS` نگاه کنید.
-
-چهار صف durable عبارت‌اند از `asr.queue`، `diar.queue`، `cleaning.queue` و `mcp.queue`. هر چهار صف به DLX مشترک متصل‌اند. فایل صوتی داخل broker قرار نمی‌گیرد و پیام فقط شناسه‌های PostgreSQL را حمل می‌کند. ASR و diarization هم‌زمان اجرا می‌شوند؛ barrier پایدار PostgreSQL بعد از موفقیت هر دو فقط یک Job cleaning ایجاد می‌کند. cleaner دیگر مستقیماً به `mcp.queue` پیام نمی‌فرستد: تکمیل cleaning برای کل Meeting باعث ترکیب (compose) و رسیدن Meeting به وضعیت «منتظر تأیید» می‌شود؛ فقط پس از تأیید صریح یک کاربر مجاز (`POST /meetings/{id}/publication/approve`) Job مرحلهٔ `MINUTES_GENERATION` صف و روی `mcp.queue` منتشر می‌شود.
-
-ACK بعد از ثبت پایدار نتیجه در PostgreSQL و MinIO ارسال می‌شود. خطاهای موقت با Attempt جدید، حداکثر سه بار و با تأخیر قابل تنظیم retry می‌شوند؛ خطای نهایی با `reject(requeue=false)` به `processing.dlq` می‌رود و جزئیات آن در ProcessingAttempt و History برای API/UI باقی می‌ماند. تحویل تکراری با وضعیت Attempt و کلید یکتای outbox idempotent شده است.
-
-حذف Voice از UI، Attemptهای `queued` و `running` وابسته را لغو و پیام‌های منتشرنشدهٔ outbox را حذف می‌کند. workerهای فعال PostgreSQL را برای cancellation بررسی می‌کنند و نتیجهٔ کار لغوشده را ذخیره یا وارد مرحلهٔ بعد نمی‌کنند. پیام RabbitMQ که قبلاً publish شده است قابل حذف انتخابی نیست؛ هنگام تحویل به‌عنوان پیام stale بدون اجرای کار ACK می‌شود.
-
-تنظیمات لازم در `.env`:
-
-```text
-RABBITMQ_HOST=rabbitmq
-RABBITMQ_PORT=5672
-RABBITMQ_USER=meeting_app
-RABBITMQ_PASSWORD=...
-RABBITMQ_PREFETCH_COUNT=1
-RABBITMQ_RETRY_DELAY_SECONDS=5
-
-BASE_URL=https://example.com/v1
-TRANSCRIPT_API_KEY=...
-TRANSCRIPT_MODEL_NAME=whisper-large-v3-persian
-ASR_REQUEST_TIMEOUT_SECONDS=600
-ASR_MAX_ATTEMPTS=3
-ASR_WORKER_NAME=asr-worker
-```
-
-خروجی استاندارد `canonical-transcript/v1` و فایل متن خام با مسیر deterministic زیر در bucket خروجی MinIO ذخیره می‌شوند و bucket، key، checksum و producer job در PostgreSQL ثبت می‌شود:
+Audio and attachments never travel through the message broker; queue messages
+carry PostgreSQL identifiers only. Objects use deterministic keys, and their
+bucket, key, checksum and producing job are recorded in PostgreSQL:
 
 ```text
 meetings/{meeting_id}/results/{result_id}/transcript.json
 meetings/{meeting_id}/results/{result_id}/raw.txt
 ```
 
-خطاهای timeout، network، HTTP 429 و HTTP 5xx تا سقف سه Attempt پیگیری می‌شوند؛ خطای احراز هویت و پاسخ نامعتبر retry نمی‌شوند. رخدادهای `processing.queued`، `processing.started`، `processing.retry_queued`، `processing.succeeded` و `processing.failed` در History ثبت می‌شوند.
+Artifact types are `normalized_audio`, `transcript_json`, `raw_text`,
+`word_timestamps_json`, `diarization_json`, `aligned_transcript_json`,
+`cleaned_text`, `metadata` and `other`.
 
-## Migration
+Metadata registration is retried three times; if it ultimately fails, the
+orphaned object is deleted from MinIO rather than left behind.
 
-برای اجرای دستی migration:
+---
+
+## Messaging and durability
+
+Five durable work queues — `preprocess.queue`, `asr.queue`, `diar.queue`,
+`cleaning.queue`, `mcp.queue` — all bound to a shared dead-letter exchange
+feeding `processing.dlq`.
+
+The platform uses a **transactional outbox**. A job, its first attempt and the
+broker message are written in one database transaction, so a RabbitMQ outage
+cannot lose work: the dispatcher publishes outbox rows with publisher
+confirms once the broker returns. Workers consume with `prefetch=1` and
+acknowledge only after the result is durably stored in PostgreSQL and MinIO.
+
+Retries are visible rather than hidden. Transient failures create a new
+`ProcessingAttempt`, up to the stage's `*_MAX_ATTEMPTS`, with a configurable
+delay. A permanent failure is rejected with `requeue=false`, lands in
+`processing.dlq`, and keeps its error code and message on the attempt row so
+the API and UI can show exactly which stage failed and why. Duplicate
+deliveries are idempotent, guarded by attempt status and a unique outbox key.
+
+Deleting a voice cancels its `queued` and `running` attempts and removes any
+unpublished outbox rows. Running workers poll PostgreSQL for cancellation and
+will neither store their result nor advance to the next stage. A message
+already published to RabbitMQ cannot be selectively withdrawn; it is
+acknowledged as stale on delivery without doing the work.
+
+---
+
+## Logging and correlation
+
+Every request gets an `X-Request-ID` and an `X-Correlation-ID`, both returned
+in the response headers. A client-supplied identifier is preserved if it is at
+most 100 characters from `A-Z a-z 0-9 . _ : -`; otherwise a UUID is generated.
+An absent correlation ID defaults to the request ID.
+
+In `test` and `production` each stdout line is a standalone JSON object:
+
+```text
+timestamp, level, service, environment, event, message
+request_id, correlation_id, client_ip
+user_id, meeting_id, voice_id        # when present in context
+method, route, status_code, duration_ms
+```
+
+`route` is the route pattern, and query strings are not recorded. Request
+bodies, query parameters, cookies, `Authorization` headers, passwords, tokens,
+secrets, transcripts and raw headers are never logged; email addresses are
+masked. An unhandled exception is logged once with its stack trace and
+context, and the client receives a generic 500 carrying the request ID.
+`/health` logs at `DEBUG` so it stays quiet in production.
+
+With `LOG_FORMAT=auto`, development prints human-readable output while test
+and production emit JSON. The application manages no log files and no
+rotation — container infrastructure can ship stdout/stderr to Loki,
+OpenSearch or similar. `trace_id` is not emitted until real tracing is added.
+
+`GET /history` is a separate, append-only business audit trail that shares
+`request_id` and `correlation_id` with the operational log, and can be
+filtered by event, actor, request ID or correlation ID.
+
+---
+
+## Database migrations
 
 ```bash
 uv run alembic upgrade head
 ```
 
-اولین migration هم دیتابیس تازه را می‌سازد و هم دیتابیس قدیمی ایجادشده با `Base.metadata.create_all` را شناسایی و بدون حذف کاربران، رمزها، Meetingها یا History موجود ارتقا می‌دهد. اجرای مستقیم `create_all` از startup حذف شده است.
+The initial migration both creates a fresh database and adopts a legacy one
+built by `Base.metadata.create_all`, upgrading it in place without dropping
+existing users, credentials, meetings or history. `create_all` is no longer
+called at startup.
 
-## تست‌ها
+---
 
-تست‌ها بر اساس حوزه در پوشه `test/` نگهداری می‌شوند:
+## Tests
+
+Tests are organised by domain in `test/`:
 
 ```text
-test_auth.py
-test_meetings.py
-test_voices.py
-test_history.py
-test_logging.py
-test_ui.py
-test_migrations.py
-test_architecture.py
-test_compose_integration.py
-test_asr.py
-test_processing.py
-test_messaging.py
-test_asr_benchmark.py            # فقط اجرای دستی؛ خارج از CI
+test_auth.py                 test_meetings.py            test_voices.py
+test_security.py             test_history.py             test_logging.py
+test_preprocessing.py        test_asr.py                 test_diarization.py
+test_diarization_optional.py test_cleaner.py             test_processing.py
+test_meeting_composer.py     test_publication.py         test_auto_publication.py
+test_mcp_worker.py           test_messaging.py           test_worker_supervision.py
+test_migrations.py           test_architecture.py        test_ui.py
+test_compose_integration.py  # needs a live stack
+test_asr_benchmark.py        # manual only, excluded from CI
 ```
 
-اجرای کامل این فاز:
+Full suite:
 
 ```bash
 uv run pytest -q -m "not asr_benchmark" test/
 ```
 
-بنچمارک زنده کیفیت فقط به‌صورت دستی و روی ۵۰ نمونه اول اجرا می‌شود. این فرمان فایل‌های نمونه را به API خارجی تنظیم‌شده ارسال می‌کند:
+The live quality benchmark runs manually against the first 50 samples and
+sends real audio to the configured external API:
 
 ```bash
 RUN_ASR_BENCHMARK=1 uv run pytest -q -m asr_benchmark test/test_asr_benchmark.py
 ```
 
-WER و CER به‌صورت corpus-level پس از نرمال‌سازی فارسی محاسبه می‌شوند؛ شرط‌های ثبت‌شده در تست `WER < 25%` و `CER < 8%` هستند. این تست به‌طور صریح از CI حذف شده است.
+WER and CER are computed corpus-level after Persian normalisation, with
+thresholds of `WER < 25%` and `CER < 8%`. This test is deliberately excluded
+from CI.
 
-در فازهای بعد، تست جدید به فایل حوزه مربوط اضافه می‌شود و همان مجموعه حوزه برای جلوگیری از regression اجرا خواهد شد.
+---
 
 ## CI/CD
 
-workflow موجود در `.github/workflows/ci-cd.yml` اکنون سه image مستقل `api`، `ui` و `asr` را در matrix می‌سازد. تست‌های Python پیش از build اجرا می‌شوند؛ تست Compose روی PostgreSQL و MinIO واقعی فقط برای API اجرا می‌شود؛ سپس در push به `main` یا tag نسخه، همان imageهای ساخته‌شده به GHCR منتشر می‌شوند:
+`.github/workflows/ci-cd.yml` runs the Python suite first, then builds the
+`api`, `ui` and `diarization` images in a matrix. The Compose integration
+test runs against real PostgreSQL, MinIO and RabbitMQ containers, for the API
+image only. On a push to `main` or a version tag, the images that passed those
+tests are published to GHCR:
 
 ```text
 ghcr.io/<owner>/asr-arusha-api
 ghcr.io/<owner>/asr-arusha-ui
-ghcr.io/<owner>/asr-arusha-worker
+ghcr.io/<owner>/asr-arusha-diarization
 ```
 
-برای pull request فقط build و test انجام می‌شود و image منتشر نمی‌شود. Compose integration عمداً سرویس‌های `postgres minio api` را صریح بالا می‌آورد تا image مستقل UI در job جداگانه باعث تداخل در تست backend نشود.
-
-## مرز ML
-
-هیچ dependency یا runtime مدل در سرویس backend وجود ندارد. worker نیز مدل را import یا اجرا نمی‌کند و فقط از طریق adapter HTTP با سرویس ASR خارجی ارتباط دارد؛ manifest، Dockerfile و process آن از API و UI جدا هستند.
+Pull requests build and test without publishing. The integration job brings up
+only `postgres minio rabbitmq api`, so the independently built UI image cannot
+interfere with backend testing.
